@@ -2,6 +2,7 @@ package cli
 
 import (
 	"github.com/it1ro/cake/internal/pipeline"
+	"github.com/it1ro/cake/internal/render"
 	"github.com/spf13/cobra"
 )
 
@@ -9,6 +10,8 @@ var (
 	cleanOpts        pipeline.Options
 	cleanNoGitignore bool
 	cleanKeepDoc     bool
+	cleanFormat      string
+	cleanClipboard   bool
 )
 
 var cleanCmd = &cobra.Command{
@@ -30,6 +33,12 @@ Build-constraints (//go:build, // +build) и директивы компилят
 		if cleanOpts.Root == "" {
 			cleanOpts.Root = "."
 		}
+		f, err := render.Parse(cleanFormat)
+		if err != nil {
+			return err
+		}
+		cleanOpts.Format = f
+		cleanOpts.Clipboard = cleanClipboard
 		cleanOpts.Mode = pipeline.ModeClean
 		cleanOpts.KeepDoc = cleanKeepDoc
 		cleanOpts.UseGitignore = !cleanNoGitignore
@@ -50,5 +59,11 @@ func init() {
 		"не учитывать .gitignore")
 	cleanCmd.Flags().BoolVar(&cleanKeepDoc, "keep-doc", false,
 		"сохранять doc-комментарии")
+	cleanCmd.Flags().StringVar(&cleanFormat, "format", "xml",
+		"формат вывода: xml | markdown | plain")
+	cleanCmd.Flags().IntVar(&cleanOpts.Budget, "budget", 0,
+		"лимит токенов; файлы сверх лимита пропускаются (0 = без лимита)")
+	cleanCmd.Flags().BoolVar(&cleanClipboard, "clipboard", false,
+		"дополнительно скопировать вывод в буфер обмена (OSC 52)")
 	rootCmd.AddCommand(cleanCmd)
 }

@@ -20,5 +20,6 @@ type Context struct {
 	Project string
 	Root    string
 	Files   []ProcessedFile
-	Tokens  int
+	Tokens  int // оценочное число токенов
+	Dropped int // файлов отброшено из-за --budget
 }

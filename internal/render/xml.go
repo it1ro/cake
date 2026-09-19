@@ -16,8 +16,12 @@ func XML(ctx types.Context, w io.Writer) error {
 	bw := bufio.NewWriter(w)
 	defer bw.Flush()
 
-	fmt.Fprintf(bw, `<context project=%q root=%q files="%d" tokens="%d">`+"\n",
+	fmt.Fprintf(bw, `<context project=%q root=%q files="%d" tokens="%d"`,
 		ctx.Project, ctx.Root, len(ctx.Files), ctx.Tokens)
+	if ctx.Dropped > 0 {
+		fmt.Fprintf(bw, ` dropped="%d"`, ctx.Dropped)
+	}
+	bw.WriteString(">\n")
 
 	entries := make([]types.FileEntry, len(ctx.Files))
 	for i, f := range ctx.Files {

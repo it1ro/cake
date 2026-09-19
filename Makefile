@@ -134,3 +134,19 @@ release-snapshot: ## Локальный прогон goreleaser без публ�
 .PHONY: clean
 clean: ## Удалить артефакты сборки
 	rm -rf $(BIN_DIR) $(DIST_DIR) coverage.out coverage.html
+
+.PHONY: build-all
+build-all: ## Кросс-сборка под linux/darwin/windows (amd64 + arm64)
+	@mkdir -p $(BIN_DIR)
+	GOOS=linux   GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY)-linux-amd64   $(CMD)
+	GOOS=linux   GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY)-linux-arm64   $(CMD)
+	GOOS=darwin  GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY)-darwin-amd64  $(CMD)
+	GOOS=darwin  GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY)-darwin-arm64  $(CMD)
+	GOOS=windows GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY)-windows-amd64.exe $(CMD)
+
+.PHONY: build-matrix
+build-matrix: ## Быстрая проверка компиляции под все GOOS без записи бинарей
+	@for os in linux darwin windows; do \
+		echo "→ $$os"; \
+		GOOS=$$os $(GO) build ./... || exit 1; \
+	done
