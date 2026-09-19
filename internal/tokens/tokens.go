@@ -6,10 +6,19 @@
 package tokens
 
 // Estimate возвращает приблизительное число токенов в src.
-// Округление — вверх, чтобы 1-байтовый файл не давал 0.
 func Estimate(src []byte) int {
-	if len(src) == 0 {
+	return EstimateSize(int64(len(src)))
+}
+
+// EstimateSize возвращает приблизительное число токенов
+// для содержимого размером n байт.
+//
+// Используется в TUI: до фактического чтения файлов у нас есть
+// только FileEntry.Size. Для clean-режима это оценка сверху —
+// комментарии будут удалены, содержимое уменьшится.
+func EstimateSize(n int64) int {
+	if n <= 0 {
 		return 0
 	}
-	return (len(src) + 3) / 4
+	return (int(n) + 3) / 4
 }

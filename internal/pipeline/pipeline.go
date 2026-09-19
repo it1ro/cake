@@ -31,32 +31,41 @@ type Options struct {
 	Format       render.Format
 	KeepDoc      bool
 	UseGitignore bool
-
-	// Budget — лимит токенов. 0 = без лимита.
-	// Файлы, не влезающие в лимит, пропускаются (жадно);
-	// порядок оставшихся сохраняется.
-	Budget int
-
-	// Clipboard — дополнительно отправить вывод в буфер
-	// обмена через OSC 52.
-	Clipboard bool
+	Budget       int
+	Clipboard    bool
 }
 
-func Run(opts Options) error {
-	entries, err := walker.Walk(walker.Options{
+// Plan — обход ФС и применение фильтров (gitignore, include/exclude,
+// max-size, отсечение бинарников). Возвращает отсортированный список.
+//
+// Отдельно от Run, чтобы TUI мог показать файлы до фактического
+// рендера и дать пользователю отредактировать выбор.
+func Plan(opts Options) ([]types.FileEntry, error) {
+	return walker.Walk(walker.Options{
 		Root:         opts.Root,
 		Includes:     opts.Includes,
 		Excludes:     opts.Excludes,
 		MaxSize:      opts.MaxSize,
 		UseGitignore: opts.UseGitignore,
 	})
+}
+
+// Run — Plan + RunWith. Точка входа для CLI-команд.
+func Run(opts Options) error {
+	files, err := Plan(opts)
 	if err != nil {
 		return err
 	}
+	return RunWith(opts, files)
+}
 
+// RunWith — обработка и рендер для указанного набора файлов.
+// files — обычно результат Plan; TUI может передать отредактированный
+// пользователем подсписок.
+func RunWith(opts Options, files []types.FileEntry) error {
 	procOpts := processor.Options{KeepDoc: opts.KeepDoc}
-	processed := make([]types.ProcessedFile, 0, len(entries))
-	for _, e := range entries {
+	processed := make([]types.ProcessedFile, 0, len(files))
+	for _, e := range files {
 		content, err := os.ReadFile(e.AbsPath)
 		if err != nil {
 			continue
@@ -77,14 +86,10 @@ func Run(opts Options) error {
 		})
 	}
 
-	// Токены + бюджет.
-	// Жадный фильтр: если файл не влезает — пропускаем его и
-	// пробуем следующий (в отсортированном списке мелкий файл
-	// может пройти после крупного). Порядок сохраняется.
 	total := 0
 	dropped := 0
 	if opts.Budget > 0 {
-		kept := processed[:0] // reuse backing array
+		kept := processed[:0]
 		for _, f := range processed {
 			t := tokens.Estimate(f.Content)
 			if total+t > opts.Budget {
@@ -119,9 +124,6 @@ func Run(opts Options) error {
 		out = f
 	}
 
-	// Если нужен clipboard, tee'им вывод в буфер — OSC 52 требует
-	// base64 от полного содержимого. Дублирование памяти тут
-	// осознанное: включается только по флагу.
 	var buf bytes.Buffer
 	target := out
 	if opts.Clipboard {

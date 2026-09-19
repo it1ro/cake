@@ -16,18 +16,32 @@ func TestEstimate(t *testing.T) {
 		{"four_bytes", "abcd", 1},
 		{"five_bytes", "abcde", 2},
 		{"hundred_x", strings.Repeat("x", 100), 25},
-		{"code_sample", "package main\n\nfunc main() {}\n", 7}, // 29 / 4 → 8? нет: 29+3/4 = 8. см. ниже
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// для code_sample want вычислим честно
-			if tc.name == "code_sample" {
-				tc.want = (len(tc.in) + 3) / 4
-			}
 			if got := Estimate([]byte(tc.in)); got != tc.want {
 				t.Errorf("Estimate(%q) = %d, want %d", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestEstimateSize(t *testing.T) {
+	tests := []struct {
+		n    int64
+		want int
+	}{
+		{0, 0},
+		{-1, 0},
+		{1, 1},
+		{4, 1},
+		{5, 2},
+		{100, 25},
+	}
+	for _, tc := range tests {
+		if got := EstimateSize(tc.n); got != tc.want {
+			t.Errorf("EstimateSize(%d) = %d, want %d", tc.n, got, tc.want)
+		}
 	}
 }
 
