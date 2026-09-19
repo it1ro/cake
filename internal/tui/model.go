@@ -25,6 +25,7 @@ type Model struct {
 
 	// Курсор и фильтр
 	cursor   int
+	offset   int // верхняя видимая строка; меняется только когда курсор выходит за окно
 	filter   string
 	inFilter bool // режим ввода фильтра (символы идут в filter, не в команды)
 	treeMode bool // true — tree, false — flat
@@ -72,6 +73,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Высота окна изменилась — пересчитать видимую область,
+		// иначе курсор может оказаться «за кадром».
+		m.ensureCursorVisible()
 		return m, nil
 	case tea.KeyMsg:
 		if m.inFilter {
@@ -170,6 +174,11 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirmed = true
 		return m, tea.Quit
 	}
+	// Любое изменение курсора (или его видимого окружения)
+	// должно скорректировать offset — и только здесь. Без этого
+	// список «прилипал» курсором к нижнему краю при движении
+	// вверх (см. renderList в view.go).
+	m.ensureCursorVisible()
 	return m, nil
 }
 
@@ -193,6 +202,7 @@ func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	m.rebuild()
+	m.ensureCursorVisible()
 	return m, nil
 }
 
@@ -213,6 +223,54 @@ func (m *Model) rebuild() {
 	}
 	if m.cursor >= n {
 		m.cursor = n - 1
+	}
+}
+
+// ensureCursorVisible держит cursor внутри видимого окна,
+// двигая только offset. Курсор не «прилипает» к краю:
+//
+//   - движение вниз: пока курсор внутри окна — offset стоит;
+//     когда курсор уходит за нижнюю границу — offset сдвигается
+//     на одну строку (курсор остаётся внизу окна).
+//   - движение вверх: пока курсор внутри окна — offset стоит;
+//     когда курсор уходит за верхнюю границу — offset
+//     подтягивается к курсору (курсор остаётся вверху окна).
+//
+// Работает для обоих режимов (flat и tree) — currentLen()
+// знает, какой список активен.
+func (m *Model) ensureCursorVisible() {
+	height := m.listHeight()
+	if height < 1 {
+		height = 1
+	}
+
+	n := m.currentLen()
+	if n == 0 {
+		m.offset = 0
+		return
+	}
+
+	// Курсор выше окна — подтянуть окно вверх.
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	}
+	// Курсор ниже окна — сдвинуть окно вниз ровно настолько,
+	// чтобы курсор оказался на последней видимой строке.
+	if m.cursor >= m.offset+height {
+		m.offset = m.cursor - height + 1
+	}
+
+	// Не показывать пустое место внизу: если список короче,
+	// чем позволяет окно, offset должен упираться в 0.
+	maxOffset := n - height
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.offset > maxOffset {
+		m.offset = maxOffset
+	}
+	if m.offset < 0 {
+		m.offset = 0
 	}
 }
 

@@ -391,3 +391,36 @@ func TestWithTree(t *testing.T) {
 		t.Error("повторный WithTree не должен ломать режим")
 	}
 }
+
+func TestScrollUpKeepsOffset(t *testing.T) {
+	entries := make([]string, 30)
+	for i := range entries {
+		entries[i] = fmt.Sprintf("f%02d.go", i)
+	}
+	m := newModel(entries...)
+	m.width, m.height = 80, 10 // listHeight = 10 - 5 - 1 = 4
+
+	// уводим курсор за нижнюю границу окна
+	for i := 0; i < 10; i++ {
+		m = key(m, "down")
+	}
+	if m.offset == 0 {
+		t.Fatal("offset должен сдвинуться после ухода за нижний край")
+	}
+	off := m.offset
+
+	// один шаг вверх — offset стоит на месте
+	m = key(m, "up")
+	if m.offset != off {
+		t.Errorf("offset поплыл при движении вверх: %d → %d", off, m.offset)
+	}
+
+	// доезжаем до верхней границы окна — только тогда offset идёт вниз
+	for m.cursor > m.offset {
+		m = key(m, "up")
+	}
+	m = key(m, "up")
+	if m.offset != off-1 {
+		t.Errorf("offset должен уменьшиться ровно на 1: %d → %d", off, m.offset)
+	}
+}
