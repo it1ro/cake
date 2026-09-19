@@ -13,24 +13,36 @@ import (
 	"github.com/it1ro/cake/pkg/types"
 )
 
+// Model — состояние TUI. Значимый тип: Update возвращает копию,
+// как принято в bubbletea.
 type Model struct {
-	all      []types.FileEntry
+	// Данные
+	all      []types.FileEntry // полный список (из Plan)
 	root     *Node             // построено из all; используется в tree-режиме
-	visible  []types.FileEntry // flat-режим, после fuzzy
+	visible  []types.FileEntry // flat-режим, после fuzzy-фильтра
 	flat     []flatItem        // tree-режим, после фильтра
-	selected map[string]bool
+	selected map[string]bool   // path → выбран
 
+	// Курсор и фильтр
 	cursor   int
 	filter   string
-	inFilter bool
-	treeMode bool
+	inFilter bool // режим ввода фильтра (символы идут в filter, не в команды)
+	treeMode bool // true — tree, false — flat
 
+	// Опции вывода; Mode и Format редактируются в TUI
 	opts pipeline.Options
 
+	// Терминал
 	width, height int
-	confirmed     bool
+
+	// Результат
+	confirmed bool // пользователь нажал enter — RunWith вызывается
 }
 
+// New создаёт модель со списком файлов и базовыми опциями
+// (обычно из cli/pick.go — флаги --format, --output и т.п.).
+//
+// Стартовый режим — flat. Для старта в дереве: New(...).WithTree().
 func New(all []types.FileEntry, opts pipeline.Options) Model {
 	return Model{
 		all:      all,
@@ -42,8 +54,19 @@ func New(all []types.FileEntry, opts pipeline.Options) Model {
 	}
 }
 
+// WithTree переключает модель в древовидный режим до старта
+// bubbletea-цикла. Вызывается один раз при конструировании
+// (cli/pick.go); после — режим меняется хоткеем `t`.
+func (m Model) WithTree() Model {
+	m.treeMode = true
+	m.rebuild()
+	return m
+}
+
+// Init — требование tea.Model. Ничего не запускаем.
 func (m Model) Init() tea.Cmd { return nil }
 
+// Update — требование tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -95,7 +118,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inFilter = true
 
 	case "t":
-		// toggle tree/list
+		// toggle tree/list, сохраняя курсор на текущем файле
 		prevPath := m.currentPath()
 		m.treeMode = !m.treeMode
 		m.rebuild()
@@ -163,6 +186,8 @@ func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filter = m.filter[:len(m.filter)-1]
 		}
 	default:
+		// Печатаемые символы. msg.String() для обычных клавиш
+		// возвращает одну руну; для спецклавиш — "up", "ctrl+x" и т.п.
 		if len(s) == 1 {
 			m.filter += s
 		}
@@ -369,10 +394,13 @@ func (m Model) currentDirPrefix() string {
 	return dir + "/"
 }
 
-// ─── Результаты ──────────────────────────────────────────────────────
+// ─── Результаты для cli/pick.go ──────────────────────────────────────
 
+// Confirmed сообщает, нажал ли пользователь enter.
 func (m Model) Confirmed() bool { return m.confirmed }
 
+// SelectedFiles возвращает выбранные файлы в исходном порядке
+// (отсортированном Plan'ом) — важно для детерминизма вывода.
 func (m Model) SelectedFiles() []types.FileEntry {
 	out := make([]types.FileEntry, 0, len(m.selected))
 	for _, e := range m.all {
@@ -383,8 +411,10 @@ func (m Model) SelectedFiles() []types.FileEntry {
 	return out
 }
 
+// Options возвращает опции с учётом переключений Mode/Format в TUI.
 func (m Model) Options() pipeline.Options { return m.opts }
 
+// SelectedCount и SelectedTokens — для отрисовки статуса.
 func (m Model) SelectedCount() int { return len(m.selected) }
 
 func (m Model) SelectedTokens() int {
@@ -397,6 +427,7 @@ func (m Model) SelectedTokens() int {
 	return total
 }
 
+// TreeMode сообщает, активен ли древовидный режим.
 func (m Model) TreeMode() bool { return m.treeMode }
 
 // ─── Flat-фильтр (fuzzy) ─────────────────────────────────────────────

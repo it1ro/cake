@@ -23,6 +23,9 @@ Doc-комментарии удаляются по умолчанию и сох�
 Build-constraints (//go:build, // +build) и директивы компилятора
 (//go:generate, //go:embed, //go:noinline, //line) сохраняются всегда.
 
+С --clipboard вывод идёт в буфер, а не в stdout. Если задан
+--output, файл тоже пишется. Отчёт о копировании — в stderr.
+
 Учитывает .gitignore (корневой и вложенные) по умолчанию.
 Отключается флагом --no-gitignore.`,
 	Args: cobra.MaximumNArgs(1),
@@ -64,6 +67,6 @@ func init() {
 	cleanCmd.Flags().IntVar(&cleanOpts.Budget, "budget", 0,
 		"лимит токенов; файлы сверх лимита пропускаются (0 = без лимита)")
 	cleanCmd.Flags().BoolVar(&cleanClipboard, "clipboard", false,
-		"дополнительно скопировать вывод в буфер обмена (OSC 52)")
+		"скопировать вывод в буфер обмена (OSC 52); вместо stdout")
 	rootCmd.AddCommand(cleanCmd)
 }

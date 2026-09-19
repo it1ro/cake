@@ -33,6 +33,11 @@ type Options struct {
 	UseGitignore bool
 	Budget       int
 	Clipboard    bool
+
+	// Summary — куда написать краткий отчёт после копирования
+	// в буфер (OSC 52). nil → os.Stderr. Игнорируется при
+	// Clipboard=false.
+	Summary io.Writer
 }
 
 // Plan — обход ФС и применение фильтров (gitignore, include/exclude,
@@ -62,6 +67,15 @@ func Run(opts Options) error {
 // RunWith — обработка и рендер для указанного набора файлов.
 // files — обычно результат Plan; TUI может передать отредактированный
 // пользователем подсписок.
+//
+// Куда пишется вывод:
+//
+//	--output               → файл
+//	--clipboard            → только буфер (stdout не засоряем)
+//	--output + --clipboard → файл + буфер
+//	без флагов             → stdout
+//
+// Summary после clipboard — в stderr (или opts.Summary).
 func RunWith(opts Options, files []types.FileEntry) error {
 	procOpts := processor.Options{KeepDoc: opts.KeepDoc}
 	processed := make([]types.ProcessedFile, 0, len(files))
@@ -86,10 +100,14 @@ func RunWith(opts Options, files []types.FileEntry) error {
 		})
 	}
 
+	// Токены + бюджет.
+	// Жадный фильтр: если файл не влезает — пропускаем его и
+	// пробуем следующий (в отсортированном списке мелкий файл
+	// может пройти после крупного). Порядок сохраняется.
 	total := 0
 	dropped := 0
 	if opts.Budget > 0 {
-		kept := processed[:0]
+		kept := processed[:0] // reuse backing array
 		for _, f := range processed {
 			t := tokens.Estimate(f.Content)
 			if total+t > opts.Budget {
@@ -114,20 +132,32 @@ func RunWith(opts Options, files []types.FileEntry) error {
 		Dropped: dropped,
 	}
 
-	out := io.Writer(os.Stdout)
+	// Куда идёт рендер:
+	//   --output file              → файл
+	//   --clipboard                → только буфер, stdout молчит
+	//   --output file --clipboard  → файл + буфер
+	//   по умолчанию               → stdout
+	var fileOut io.Writer
 	if opts.Output != "" {
 		f, err := os.Create(opts.Output)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
-		out = f
+		fileOut = f
 	}
 
 	var buf bytes.Buffer
-	target := out
-	if opts.Clipboard {
-		target = io.MultiWriter(out, &buf)
+	var target io.Writer
+	switch {
+	case fileOut != nil && opts.Clipboard:
+		target = io.MultiWriter(fileOut, &buf)
+	case fileOut != nil:
+		target = fileOut
+	case opts.Clipboard:
+		target = &buf
+	default:
+		target = os.Stdout
 	}
 
 	if err := render.Render(ctx, opts.Format, target); err != nil {
@@ -138,6 +168,7 @@ func RunWith(opts Options, files []types.FileEntry) error {
 		if err := clipboard.CopyToTTY(buf.Bytes()); err != nil {
 			return fmt.Errorf("clipboard: %w", err)
 		}
+		writeSummary(opts.Summary, ctx, buf.Len())
 	}
 	return nil
 }

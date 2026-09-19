@@ -22,6 +22,9 @@ var dumpCmd = &cobra.Command{
 Формат по умолчанию — xml (LLM стабильно его парсят).
 Поддерживаются markdown и plain.
 
+С --clipboard вывод идёт в буфер, а не в stdout. Если задан
+--output, файл тоже пишется. Отчёт о копировании — в stderr.
+
 Учитывает .gitignore (корневой и вложенные) по умолчанию.
 Отключается флагом --no-gitignore.`,
 	Args: cobra.MaximumNArgs(1),
@@ -60,6 +63,6 @@ func init() {
 	dumpCmd.Flags().IntVar(&dumpOpts.Budget, "budget", 0,
 		"лимит токенов; файлы сверх лимита пропускаются (0 = без лимита)")
 	dumpCmd.Flags().BoolVar(&dumpClipboard, "clipboard", false,
-		"дополнительно скопировать вывод в буфер обмена (OSC 52)")
+		"скопировать вывод в буфер обмена (OSC 52); вместо stdout")
 	rootCmd.AddCommand(dumpCmd)
 }

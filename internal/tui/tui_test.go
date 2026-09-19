@@ -369,3 +369,25 @@ func TestTreeModePreservesCursor(t *testing.T) {
 		t.Errorf("курсор должен вернуться на cmd/main.go, got %+v", e)
 	}
 }
+
+// WithTree — старт в дереве, отдельным методом. New остаётся
+// flat по умолчанию: это осознанное решение CLI, не свойство
+// модели. Тест фиксирует контракт.
+func TestWithTree(t *testing.T) {
+	m := newModel("cmd/a.go", "internal/b.go")
+	if m.TreeMode() {
+		t.Fatal("New должен стартовать в flat-режиме")
+	}
+	m = m.WithTree()
+	if !m.TreeMode() {
+		t.Error("WithTree должен включить tree-режим")
+	}
+	if len(m.flat) == 0 {
+		t.Error("после WithTree flat должен быть заполнен")
+	}
+	// идемпотентность
+	m = m.WithTree()
+	if !m.TreeMode() {
+		t.Error("повторный WithTree не должен ломать режим")
+	}
+}

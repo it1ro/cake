@@ -23,58 +23,73 @@ var pickCmd = &cobra.Command{
 	Short: "Интерактивный выбор файлов",
 	Long: `Открывает TUI со списком файлов проекта.
 
-Навигация:
+Стартует в древовидном режиме (t — переключить на плоский список).
+
+Навигация (tree):
   ↑/↓ или j/k      перемещение
-  space            выбрать/снять файл
-  a / A            выбрать / снять всё видимое
-  d                toggle всей директории текущего файла
-  /                fuzzy-фильтр по пути (esc — сбросить)
+  ←/→ или h/l      свернуть / развернуть директорию
+  space            выбрать/снять (на директории — всё поддерево)
+  a / A            выбрать / снять всё
+  d                toggle директории под курсором
+  /                фильтр по пути (esc — сбросить)
+
+Навигация (flat):
+  те же клавиши; ←/→ не действуют.
+
+Общее:
   tab              переключить режим dump ↔ clean
   f                переключить формат xml → markdown → plain
+  t                переключить tree ↔ flat
   ⏎                экспорт (pipeline.RunWith)
   q / ctrl+c       выход без вывода
 
 Учитывает .gitignore (корневой и вложенные) по умолчанию.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) > 0 {
-			pickOpts.Root = args[0]
-		}
-		if pickOpts.Root == "" {
-			pickOpts.Root = "."
-		}
-		f, err := render.Parse(pickFormat)
-		if err != nil {
-			return err
-		}
-		pickOpts.Format = f
-		pickOpts.Clipboard = pickClipboard
-		pickOpts.Mode = pipeline.ModeDump
-		pickOpts.UseGitignore = !pickNoGitignore
-
-		files, err := pipeline.Plan(pickOpts)
-		if err != nil {
-			return err
-		}
-
-		model := tui.New(files, pickOpts)
-		final, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
-		if err != nil {
-			return err
-		}
-
-		fm, ok := final.(tui.Model)
-		if !ok || !fm.Confirmed() {
-			return nil // пользователь вышел без подтверждения
-		}
-
-		selected := fm.SelectedFiles()
-		if len(selected) == 0 {
-			return errors.New("ничего не выбрано")
-		}
-
-		return pipeline.RunWith(fm.Options(), selected)
+		return runPick(args)
 	},
+}
+
+// runPick — общая точка входа для `cake` (без аргументов)
+// и `cake pick [path]`. Стартует TUI в tree-режиме.
+func runPick(args []string) error {
+	if len(args) > 0 {
+		pickOpts.Root = args[0]
+	}
+	if pickOpts.Root == "" {
+		pickOpts.Root = "."
+	}
+	f, err := render.Parse(pickFormat)
+	if err != nil {
+		return err
+	}
+	pickOpts.Format = f
+	pickOpts.Clipboard = pickClipboard
+	pickOpts.Mode = pipeline.ModeDump
+	pickOpts.UseGitignore = !pickNoGitignore
+
+	files, err := pipeline.Plan(pickOpts)
+	if err != nil {
+		return err
+	}
+
+	model := tui.New(files, pickOpts).WithTree()
+	final, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
+	if err != nil {
+		return err
+	}
+
+	fm, ok := final.(tui.Model)
+	if !ok || !fm.Confirmed() {
+		return nil // пользователь вышел без подтверждения
+	}
+
+	selected := fm.SelectedFiles()
+	if len(selected) == 0 {
+		return errors.New("ничего не выбрано")
+	}
+
+	return pipeline.RunWith(fm.Options(), selected)
 }
 
 func init() {
@@ -91,7 +106,7 @@ func init() {
 	pickCmd.Flags().StringVar(&pickFormat, "format", "xml",
 		"стартовый формат вывода: xml | markdown | plain")
 	pickCmd.Flags().BoolVar(&pickClipboard, "clipboard", false,
-		"скопировать результат в буфер обмена (OSC 52)")
+		"скопировать результат в буфер обмена (OSC 52); вместо stdout")
 	pickCmd.Flags().BoolVar(&pickOpts.KeepDoc, "keep-doc", false,
 		"сохранять doc-комментарии (только в режиме clean)")
 	pickCmd.Flags().IntVar(&pickOpts.Budget, "budget", 0,
