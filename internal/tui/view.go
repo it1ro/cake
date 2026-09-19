@@ -8,99 +8,164 @@ import (
 
 	"github.com/it1ro/cake/internal/pipeline"
 	"github.com/it1ro/cake/internal/render"
+	"github.com/it1ro/cake/pkg/types"
 )
 
 var (
 	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
 	cursorStyle   = lipgloss.NewStyle().Reverse(true)
 	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	partialStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	dirStyle      = lipgloss.NewStyle().Bold(true)
 	dimStyle      = lipgloss.NewStyle().Faint(true)
 	filterStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	helpStyle     = lipgloss.NewStyle().Faint(true)
 )
 
-// View — требование tea.Model.
+const (
+	viewChrome = 5 // header(2) + пустая после списка(1) + статус(1) + help(1)
+	filterLine = 1 // строка фильтра, зарезервирована всегда
+)
+
 func (m Model) View() string {
 	if m.width == 0 {
-		// ещё не пришёл WindowSizeMsg
 		return "loading…"
 	}
 
 	var b strings.Builder
 
-	// Header
 	b.WriteString(titleStyle.Render("cake pick"))
 	b.WriteString(dimStyle.Render(" · " + m.opts.Root))
 	b.WriteString("\n\n")
 
-	// Body
 	b.WriteString(m.renderList())
 	b.WriteString("\n")
 
-	// Filter (если активен или непустой)
 	if m.inFilter || m.filter != "" {
 		b.WriteString(filterStyle.Render("/" + m.filter))
 		if m.inFilter {
 			b.WriteString("▎")
 		}
-		b.WriteString("\n")
 	}
+	b.WriteString("\n")
 
-	// Status
 	b.WriteString(m.renderStatus())
 	b.WriteString("\n")
 
-	// Help
-	b.WriteString(helpStyle.Render(
-		"↑↓ · space · a/A · d · / filter · tab mode · f format · ⏎ export · q quit",
-	))
+	help := "↑↓ · space · a/A · d · / filter · tab mode · f format · t tree · ⏎ export · q quit"
+	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
 }
 
 func (m Model) renderList() string {
-	// Фиксированные строки: header (2), фильтр (≤1), статус (1),
-	// help (1), пустые разделители (2). Берём с запасом.
-	available := m.height - 7
-	if available < 3 {
-		available = 3
+	height := m.listHeight()
+	if height < 1 {
+		height = 1
 	}
 
-	// Скользящее окно вокруг курсора.
 	start := 0
-	if m.cursor >= available {
-		start = m.cursor - available + 1
+	if m.cursor >= height {
+		start = m.cursor - height + 1
 	}
-	end := start + available
-	if end > len(m.visible) {
-		end = len(m.visible)
-	}
-
-	if len(m.visible) == 0 {
-		return dimStyle.Render("  (нет совпадений)")
+	end := start + height
+	total := m.currentLen()
+	if end > total {
+		end = total
 	}
 
-	var b strings.Builder
-	for i := start; i < end; i++ {
-		e := m.visible[i]
-		mark := "[ ] "
-		if m.selected[e.Path] {
+	lines := make([]string, 0, height)
+
+	if total == 0 {
+		lines = append(lines, dimStyle.Render("  (нет совпадений)"))
+	} else if m.treeMode {
+		for i := start; i < end; i++ {
+			lines = append(lines, m.renderTreeLine(m.flat[i], i == m.cursor))
+		}
+	} else {
+		for i := start; i < end; i++ {
+			lines = append(lines, m.renderFlatLine(m.visible[i], i == m.cursor))
+		}
+	}
+
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderFlatLine(e types.FileEntry, isCursor bool) string {
+	mark := "[ ] "
+	if m.selected[e.Path] {
+		mark = "[x] "
+	}
+	line := mark + e.Path
+
+	switch {
+	case isCursor:
+		line = cursorStyle.Render(line)
+	case m.selected[e.Path]:
+		line = selectedStyle.Render(line)
+	}
+	return line
+}
+
+func (m Model) renderTreeLine(it flatItem, isCursor bool) string {
+	n := it.node
+
+	mark := "[ ] "
+	switch {
+	case n.IsDir:
+		sel, total := selectState(n, m.selected)
+		switch {
+		case total > 0 && sel == total:
+			mark = "[x] "
+		case sel > 0:
+			mark = "[-] "
+		}
+	default:
+		if m.selected[n.Path] {
 			mark = "[x] "
 		}
-		line := mark + e.Path
-
-		switch {
-		case i == m.cursor:
-			line = cursorStyle.Render(line)
-		case m.selected[e.Path]:
-			line = selectedStyle.Render(line)
-		}
-		b.WriteString(line)
-		b.WriteString("\n")
 	}
-	// Убираем последний \n, чтобы не было пустой строки в конце.
-	s := b.String()
-	return strings.TrimRight(s, "\n")
+
+	name := n.Name
+	if n.IsDir {
+		name += "/"
+		if n.Expanded {
+			name = "▾ " + name
+		} else {
+			name = "▸ " + name
+		}
+	}
+
+	plain := it.prefix + mark + name
+
+	if isCursor {
+		return cursorStyle.Render(plain)
+	}
+
+	// Стилизация: mark отдельным цветом, но с сохранением позиции.
+	var style lipgloss.Style
+	switch {
+	case strings.HasPrefix(mark, "[x]"):
+		style = selectedStyle
+	case strings.HasPrefix(mark, "[-]"):
+		style = partialStyle
+	case n.IsDir:
+		style = dirStyle
+	default:
+		return plain
+	}
+	return it.prefix + style.Render(mark+name)
+}
+
+func (m Model) listHeight() int {
+	h := m.height - viewChrome - filterLine
+	if h < 3 {
+		h = 3
+	}
+	return h
 }
 
 func (m Model) renderStatus() string {
@@ -108,13 +173,17 @@ func (m Model) renderStatus() string {
 	if m.opts.Mode == pipeline.ModeClean {
 		mode = "clean"
 	}
+	view := "list"
+	if m.treeMode {
+		view = "tree"
+	}
 	format := string(m.opts.Format)
 	if format == "" {
 		format = string(render.FormatXML)
 	}
 
-	return fmt.Sprintf("%s · %s · %d/%d selected · ~%d tok",
-		mode, format,
+	return fmt.Sprintf("%s · %s · %s · %d/%d selected · ~%d tok",
+		mode, view, format,
 		m.SelectedCount(), len(m.all),
 		m.SelectedTokens(),
 	)

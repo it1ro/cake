@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -201,5 +203,169 @@ func TestViewBeforeResize(t *testing.T) {
 	m := newModel("a.go")
 	if got := m.View(); got == "" {
 		t.Error("View до resize должен что-то возвращать, не пустоту")
+	}
+}
+
+// View должен быть стабильной высоты независимо от того,
+// сколько файлов видно после фильтрации. Иначе нижний край
+// (статус, help) пляшет при вводе фильтра.
+func TestViewHeightStable(t *testing.T) {
+	entries := make([]string, 30)
+	for i := range entries {
+		entries[i] = fmt.Sprintf("dir%02d/file.go", i)
+	}
+	m := newModel(entries...)
+	m.width, m.height = 80, 24
+
+	base := strings.Count(m.View(), "\n")
+
+	// С фильтром, который оставляет 2 файла.
+	m = key(m, "/")
+	for _, c := range "dir00" {
+		m = key(m, string(c))
+	}
+	filtered := strings.Count(m.View(), "\n")
+
+	// С фильтром, который не находит ничего.
+	m = key(m, "esc")
+	m = key(m, "/")
+	for _, c := range "zzzzzz" {
+		m = key(m, string(c))
+	}
+	empty := strings.Count(m.View(), "\n")
+
+	if base != filtered {
+		t.Errorf("высота с фильтром (%d) != без фильтра (%d)", filtered, base)
+	}
+	if base != empty {
+		t.Errorf("высота с пустым фильтром (%d) != без фильтра (%d)", empty, base)
+	}
+}
+
+func TestTreeModeToggle(t *testing.T) {
+	m := newModel("a/b.go", "a/c.go", "d.go")
+	if m.TreeMode() {
+		t.Fatal("стартовый режим — flat")
+	}
+	m = key(m, "t")
+	if !m.TreeMode() {
+		t.Error("t должен включить tree")
+	}
+	m = key(m, "t")
+	if m.TreeMode() {
+		t.Error("повторный t — обратно в flat")
+	}
+}
+
+func TestTreeCollapse(t *testing.T) {
+	m := newModel("cmd/main.go", "cmd/helper.go", "README.md")
+	m = key(m, "t")
+	m = key(m, "g") // t сохраняет курсор на текущем файле — сбрасываем на верх
+
+	it := m.currentTreeItem()
+	if it == nil || it.node.Name != "cmd" {
+		t.Fatalf("ожидался курсор на cmd, got %+v", it)
+	}
+	before := len(m.flat)
+	m = key(m, "left")
+	after := len(m.flat)
+	if after >= before {
+		t.Errorf("collapse должен уменьшить список: %d → %d", before, after)
+	}
+	m = key(m, "right")
+	if len(m.flat) != before {
+		t.Errorf("expand должен вернуть: %d → %d", after, len(m.flat))
+	}
+}
+
+func TestTreeSelectDir(t *testing.T) {
+	m := newModel("cmd/main.go", "cmd/helper.go", "README.md")
+	m = key(m, "t")
+	m = key(m, "g")
+
+	m = key(m, " ")
+	if !m.selected["cmd/main.go"] || !m.selected["cmd/helper.go"] {
+		t.Error("space на cmd должен выбрать все файлы под ней")
+	}
+	if m.selected["README.md"] {
+		t.Error("space на cmd не должен трогать README.md")
+	}
+
+	m = key(m, " ")
+	if m.selected["cmd/main.go"] || m.selected["cmd/helper.go"] {
+		t.Error("повторный space должен снять выбор под cmd")
+	}
+}
+
+func TestTreePartialSelect(t *testing.T) {
+	m := newModel("cmd/a.go", "cmd/b.go")
+	m = key(m, "t")
+	m = key(m, "g")
+
+	// cmd/ уже раскрыт по умолчанию; right — no-op, но пусть будет
+	m = key(m, "right")
+	m = key(m, "down")
+	m = key(m, " ")
+
+	m = key(m, "up")
+	it := m.currentTreeItem()
+	if it == nil || !it.node.IsDir {
+		t.Fatal("курсор должен быть на cmd")
+	}
+	sel, total := selectState(it.node, m.selected)
+	if sel != 1 || total != 2 {
+		t.Errorf("selectState = (%d, %d), want (1, 2)", sel, total)
+	}
+}
+
+func TestTreeFilterKeepsParents(t *testing.T) {
+	m := newModel("cmd/cake/main.go", "internal/walker/walker.go", "README.md")
+	m = key(m, "t")
+	m = key(m, "/")
+	for _, c := range "walker" {
+		m = key(m, string(c))
+	}
+	// В дереве должно остаться: internal/ (родитель), walker/ (родитель),
+	// walker.go (совпадение). README.md и cmd/ исчезли.
+	var names []string
+	for _, it := range m.flat {
+		names = append(names, it.node.Path)
+	}
+	hasWalker := false
+	hasCmd := false
+	for _, n := range names {
+		if strings.HasPrefix(n, "internal/walker") {
+			hasWalker = true
+		}
+		if strings.HasPrefix(n, "cmd") {
+			hasCmd = true
+		}
+	}
+	if !hasWalker {
+		t.Errorf("walker не найден: %v", names)
+	}
+	if hasCmd {
+		t.Errorf("cmd не должен остаться: %v", names)
+	}
+}
+
+// t должен сохранять курсор на текущем файле — иначе пользователь,
+// листающий список и решивший глянуть дерево, теряет контекст.
+func TestTreeModePreservesCursor(t *testing.T) {
+	m := newModel("cmd/main.go", "cmd/helper.go", "README.md")
+	// в flat cursor=0 → cmd/main.go
+	m = key(m, "t")
+	it := m.currentTreeItem()
+	if it == nil {
+		t.Fatal("ожидался узел после toggle")
+	}
+	if it.node.Path != "cmd/main.go" {
+		t.Errorf("курсор должен остаться на cmd/main.go, got %q", it.node.Path)
+	}
+
+	// обратно — тот же файл
+	m = key(m, "t")
+	if e := m.currentFlatEntry(); e == nil || e.Path != "cmd/main.go" {
+		t.Errorf("курсор должен вернуться на cmd/main.go, got %+v", e)
 	}
 }

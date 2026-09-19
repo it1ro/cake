@@ -1,10 +1,3 @@
-// Package tui реализует интерактивный выбор файлов для команды
-// cake pick. Модель получает список FileEntry (от pipeline.Plan),
-// даёт пользователю отредактировать выбор и возвращает готовый
-// набор через SelectedFiles().
-//
-// Модель не читает содержимое файлов и не рендерит вывод —
-// этим занимается pipeline.RunWith после выхода из TUI.
 package tui
 
 import (
@@ -20,44 +13,37 @@ import (
 	"github.com/it1ro/cake/pkg/types"
 )
 
-// Model — состояние TUI. Значимый тип: Update возвращает копию,
-// как принято в bubbletea.
 type Model struct {
-	// Данные
-	all      []types.FileEntry // полный список (из Plan)
-	visible  []types.FileEntry // после fuzzy-фильтра
-	selected map[string]bool   // path → выбран
+	all      []types.FileEntry
+	root     *Node             // построено из all; используется в tree-режиме
+	visible  []types.FileEntry // flat-режим, после fuzzy
+	flat     []flatItem        // tree-режим, после фильтра
+	selected map[string]bool
 
-	// Курсор и фильтр
 	cursor   int
 	filter   string
-	inFilter bool // режим ввода фильтра (символы идут в filter, не в команды)
+	inFilter bool
+	treeMode bool
 
-	// Опции вывода; Mode и Format редактируются в TUI
 	opts pipeline.Options
 
-	// Терминал
 	width, height int
-
-	// Результат
-	confirmed bool // пользователь нажал enter — RunWith вызывается
+	confirmed     bool
 }
 
-// New создаёт модель со списком файлов и базовыми опциями
-// (обычно из cli/pick.go — флаги --format, --output и т.п.).
 func New(all []types.FileEntry, opts pipeline.Options) Model {
 	return Model{
 		all:      all,
+		root:     buildTree(all),
 		visible:  all,
 		selected: make(map[string]bool),
 		opts:     opts,
+		treeMode: false,
 	}
 }
 
-// Init — требование tea.Model. Ничего не запускаем.
 func (m Model) Init() tea.Cmd { return nil }
 
-// Update — требование tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -74,7 +60,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+	key := msg.String()
+	switch key {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 
@@ -83,33 +70,61 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor--
 		}
 	case "down", "j":
-		if m.cursor < len(m.visible)-1 {
+		if m.cursor < m.currentLen()-1 {
 			m.cursor++
 		}
 	case "g":
 		m.cursor = 0
 	case "G":
-		if len(m.visible) > 0 {
-			m.cursor = len(m.visible) - 1
+		if n := m.currentLen(); n > 0 {
+			m.cursor = n - 1
 		}
 
 	case " ":
 		m.toggleCursor()
 
 	case "a":
-		for _, e := range m.visible {
-			m.selected[e.Path] = true
-		}
+		m.selectAllVisible(true)
 	case "A":
-		for _, e := range m.visible {
-			delete(m.selected, e.Path)
-		}
+		m.selectAllVisible(false)
 
-	case "d": // toggle всей директории текущего файла
-		m.toggleDir()
+	case "d":
+		m.toggleDirScope()
 
 	case "/":
 		m.inFilter = true
+
+	case "t":
+		// toggle tree/list
+		prevPath := m.currentPath()
+		m.treeMode = !m.treeMode
+		m.rebuild()
+		m.moveCursorToPath(prevPath)
+
+	case "right", "l":
+		if m.treeMode {
+			if it := m.currentTreeItem(); it != nil && it.node.IsDir && !it.node.Expanded {
+				prevPath := it.node.Path
+				it.node.Expanded = true
+				m.rebuild()
+				m.moveCursorToPath(prevPath)
+			}
+		}
+
+	case "left", "h":
+		if m.treeMode {
+			if it := m.currentTreeItem(); it != nil && it.node.IsDir && it.node.Expanded {
+				prevPath := it.node.Path
+				it.node.Expanded = false
+				m.rebuild()
+				m.moveCursorToPath(prevPath)
+			} else if it := m.currentTreeItem(); it != nil && it.node.Parent != nil {
+				// переход к родителю
+				if it.node.Parent.Path != "" {
+					m.moveCursorToPath(it.node.Parent.Path)
+				}
+			}
+		}
 
 	case "tab":
 		if m.opts.Mode == pipeline.ModeDump {
@@ -148,76 +163,216 @@ func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filter = m.filter[:len(m.filter)-1]
 		}
 	default:
-		// Печатаемые символы. msg.String() для обычных клавиш
-		// возвращает одну руну; для спецклавиш — "up", "ctrl+x" и т.п.
 		if len(s) == 1 {
 			m.filter += s
 		}
 	}
-	m.visible = filterEntries(m.all, m.filter)
-	if m.cursor >= len(m.visible) {
-		m.cursor = 0
-	}
+	m.rebuild()
 	return m, nil
+}
+
+// ─── Пересборка видимого списка ──────────────────────────────────────
+
+// rebuild пересчитывает visible (flat) или flat (tree) по текущему
+// фильтру и корректирует курсор.
+func (m *Model) rebuild() {
+	if m.treeMode {
+		m.flat = flatten(m.root, m.filter)
+	} else {
+		m.visible = filterEntries(m.all, m.filter)
+	}
+	n := m.currentLen()
+	if n == 0 {
+		m.cursor = 0
+		return
+	}
+	if m.cursor >= n {
+		m.cursor = n - 1
+	}
+}
+
+func (m Model) currentLen() int {
+	if m.treeMode {
+		return len(m.flat)
+	}
+	return len(m.visible)
+}
+
+// currentPath возвращает путь текущего узла в любом режиме; ""
+// если список пуст или корень (в дереве).
+func (m Model) currentPath() string {
+	if m.treeMode {
+		if m.cursor < len(m.flat) {
+			return m.flat[m.cursor].node.Path
+		}
+		return ""
+	}
+	if m.cursor < len(m.visible) {
+		return m.visible[m.cursor].Path
+	}
+	return ""
+}
+
+func (m Model) currentTreeItem() *flatItem {
+	if !m.treeMode || m.cursor >= len(m.flat) {
+		return nil
+	}
+	return &m.flat[m.cursor]
+}
+
+func (m Model) currentFlatEntry() *types.FileEntry {
+	if m.treeMode || m.cursor >= len(m.visible) {
+		return nil
+	}
+	return &m.visible[m.cursor]
+}
+
+// moveCursorToPath пытается поставить курсор на узел с данным
+// путём. Если узел больше не виден — оставляет курсор в границах.
+func (m *Model) moveCursorToPath(p string) {
+	if p == "" {
+		return
+	}
+	if m.treeMode {
+		for i, it := range m.flat {
+			if it.node.Path == p {
+				m.cursor = i
+				return
+			}
+		}
+	} else {
+		for i, e := range m.visible {
+			if e.Path == p {
+				m.cursor = i
+				return
+			}
+		}
+	}
+	if n := m.currentLen(); n > 0 && m.cursor >= n {
+		m.cursor = n - 1
+	}
 }
 
 // ─── Операции над выбором ────────────────────────────────────────────
 
+// toggleCursor — space. Файл: инвертировать. Директория: если всё
+// выбрано — снять, иначе — выбрать всё поддерево.
 func (m *Model) toggleCursor() {
-	if len(m.visible) == 0 {
+	if m.treeMode {
+		it := m.currentTreeItem()
+		if it == nil {
+			return
+		}
+		if it.node.IsDir {
+			m.toggleSubtree(it.node)
+		} else {
+			toggleFile(m.selected, it.node.Path)
+		}
 		return
 	}
-	p := m.visible[m.cursor].Path
-	if m.selected[p] {
-		delete(m.selected, p)
-	} else {
-		m.selected[p] = true
+	if e := m.currentFlatEntry(); e != nil {
+		toggleFile(m.selected, e.Path)
 	}
 }
 
-// toggleDir: если все файлы директории текущего файла выбраны —
-// снять; иначе — выбрать все.
-func (m *Model) toggleDir() {
-	if len(m.visible) == 0 {
+func (m *Model) toggleSubtree(n *Node) {
+	files := n.fileDescendants()
+	sel, total := selectState(n, m.selected)
+	all := total > 0 && sel == total
+	for _, p := range files {
+		if all {
+			delete(m.selected, p)
+		} else {
+			m.selected[p] = true
+		}
+	}
+}
+
+func toggleFile(sel map[string]bool, p string) {
+	if sel[p] {
+		delete(sel, p)
+	} else {
+		sel[p] = true
+	}
+}
+
+// selectAllVisible — a / A. В tree-режиме работает по всем файлам
+// дерева, независимо от того, что свёрнуто. Так удобнее: «a» —
+// «выбрать весь проект».
+func (m *Model) selectAllVisible(on bool) {
+	for _, e := range m.all {
+		if on {
+			m.selected[e.Path] = true
+		} else {
+			delete(m.selected, e.Path)
+		}
+	}
+}
+
+// toggleDirScope — d. В flat-режиме: родительская директория
+// текущего файла. В tree-режиме: текущая директория, если курсор
+// на директории; иначе — родитель текущего файла.
+func (m *Model) toggleDirScope() {
+	prefix := m.currentDirPrefix()
+	if prefix == "" {
 		return
 	}
-	cur := m.visible[m.cursor]
-	dir := path.Dir(cur.Path)
-	prefix := ""
-	if dir != "." {
-		prefix = dir + "/"
-	}
-
-	allSelected := true
+	// есть ли вообще файлы с этим префиксом
 	any := false
+	all := true
 	for _, e := range m.all {
 		if !strings.HasPrefix(e.Path, prefix) {
 			continue
 		}
 		any = true
 		if !m.selected[e.Path] {
-			allSelected = false
+			all = false
 			break
 		}
 	}
 	if !any {
 		return
 	}
-
 	for _, e := range m.all {
 		if strings.HasPrefix(e.Path, prefix) {
-			m.selected[e.Path] = !allSelected
+			if all {
+				delete(m.selected, e.Path)
+			} else {
+				m.selected[e.Path] = true
+			}
 		}
 	}
 }
 
-// ─── Результаты для cli/pick.go ──────────────────────────────────────
+func (m Model) currentDirPrefix() string {
+	if m.treeMode {
+		it := m.currentTreeItem()
+		if it == nil {
+			return ""
+		}
+		if it.node.IsDir {
+			return it.node.Path + "/"
+		}
+		if it.node.Parent != nil && it.node.Parent.Path != "" {
+			return it.node.Parent.Path + "/"
+		}
+		return ""
+	}
+	e := m.currentFlatEntry()
+	if e == nil {
+		return ""
+	}
+	dir := path.Dir(e.Path)
+	if dir == "." {
+		return ""
+	}
+	return dir + "/"
+}
 
-// Confirmed сообщает, нажал ли пользователь enter.
+// ─── Результаты ──────────────────────────────────────────────────────
+
 func (m Model) Confirmed() bool { return m.confirmed }
 
-// SelectedFiles возвращает выбранные файлы в исходном порядке
-// (отсортированном Plan'ом) — важно для детерминизма вывода.
 func (m Model) SelectedFiles() []types.FileEntry {
 	out := make([]types.FileEntry, 0, len(m.selected))
 	for _, e := range m.all {
@@ -228,10 +383,8 @@ func (m Model) SelectedFiles() []types.FileEntry {
 	return out
 }
 
-// Options возвращает опции с учётом переключений Mode/Format в TUI.
 func (m Model) Options() pipeline.Options { return m.opts }
 
-// SelectedCount и SelectedTokens — для отрисовки статуса.
 func (m Model) SelectedCount() int { return len(m.selected) }
 
 func (m Model) SelectedTokens() int {
@@ -244,7 +397,9 @@ func (m Model) SelectedTokens() int {
 	return total
 }
 
-// ─── Фильтр ──────────────────────────────────────────────────────────
+func (m Model) TreeMode() bool { return m.treeMode }
+
+// ─── Flat-фильтр (fuzzy) ─────────────────────────────────────────────
 
 func filterEntries(all []types.FileEntry, pattern string) []types.FileEntry {
 	if pattern == "" {
