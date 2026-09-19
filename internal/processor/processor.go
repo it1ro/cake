@@ -1,8 +1,7 @@
-package processor
-
 // Package processor определяет интерфейс обработки файлов
 // и реестр процессоров. Реализации живут в подпакетах
 // (golang, python, …) и регистрируются через init().
+package processor
 
 import (
 	"path/filepath"

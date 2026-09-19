@@ -1,6 +1,8 @@
 package walker
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/it1ro/cake/pkg/types"
@@ -68,4 +70,60 @@ func TestTree(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWalk_RespectsGitignore(t *testing.T) {
+	root := t.TempDir()
+
+	// Файлы
+	mustWrite(t, root, "keep.go", "package main\n")
+	mustWrite(t, root, "skip.go", "package main\n")
+	mustWrite(t, root, ".gitignore", "skip.go\n")
+
+	entries, err := Walk(Options{Root: root, UseGitignore: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var paths []string
+	for _, e := range entries {
+		paths = append(paths, e.Path)
+	}
+
+	if contains(paths, "skip.go") {
+		t.Errorf("skip.go should be ignored, got: %v", paths)
+	}
+	if !contains(paths, "keep.go") {
+		t.Errorf("keep.go should be present, got: %v", paths)
+	}
+
+	// С --no-gitignore skip.go возвращается
+	entries, _ = Walk(Options{Root: root, UseGitignore: false})
+	paths = nil
+	for _, e := range entries {
+		paths = append(paths, e.Path)
+	}
+	if !contains(paths, "skip.go") {
+		t.Errorf("with UseGitignore=false skip.go should be present, got: %v", paths)
+	}
+}
+
+func mustWrite(t *testing.T, dir, name, content string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

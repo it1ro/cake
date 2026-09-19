@@ -4,7 +4,6 @@
 # (часть целей может потребовать адаптации).
 
 BINARY      := cake
-PKG         := github.com/it1ro/cake
 CMD         := ./cmd/cake
 BIN_DIR     := bin
 DIST_DIR    := dist

@@ -8,15 +8,17 @@ import (
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
+	"github.com/it1ro/cake/internal/gitignore"
 	"github.com/it1ro/cake/internal/processor"
 	"github.com/it1ro/cake/pkg/types"
 )
 
 type Options struct {
-	Root     string
-	Includes []string
-	Excludes []string
-	MaxSize  int64
+	Root         string
+	Includes     []string
+	Excludes     []string
+	MaxSize      int64
+	UseGitignore bool
 }
 
 func Walk(opts Options) ([]types.FileEntry, error) {
@@ -26,10 +28,20 @@ func Walk(opts Options) ([]types.FileEntry, error) {
 	}
 
 	var entries []types.FileEntry
+	var gm *gitignore.Matcher
+	if opts.UseGitignore {
+		gm = gitignore.New(root)
+	}
 
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+
+		rel, _ := filepath.Rel(root, path)
+		rel = filepath.ToSlash(rel)
+		if rel == "." {
+			rel = ""
 		}
 
 		name := d.Name()
@@ -37,11 +49,26 @@ func Walk(opts Options) ([]types.FileEntry, error) {
 			if name == ".git" || name == "node_modules" || name == "vendor" {
 				return filepath.SkipDir
 			}
+
+			// Сначала проверяем, не игнорируется ли сама директория
+			// по уже накопленным (родительским) правилам.
+			if gm != nil && rel != "" && gm.Ignore(rel, true) {
+				return filepath.SkipDir
+			}
+
+			// Только пустив директорию внутрь, читаем её .gitignore —
+			// его правила применяются к содержимому, не к ней самой.
+			if gm != nil {
+				if err := gm.Load(path); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 
-		rel, _ := filepath.Rel(root, path)
-		rel = filepath.ToSlash(rel)
+		if gm != nil && gm.Ignore(rel, false) {
+			return nil
+		}
 
 		if !matches(rel, opts.Includes, opts.Excludes) {
 			return nil
@@ -110,7 +137,6 @@ func isBinary(path string) bool {
 }
 
 // Tree рисует ASCII-дерево из отсортированного списка путей.
-// Формат совместим с `tree` и с тем, что ожидают LLM.
 func Tree(entries []types.FileEntry) string {
 	if len(entries) == 0 {
 		return ""
@@ -151,8 +177,6 @@ func (n *treeNode) insert(parts []string) {
 		n.index[name] = child
 		n.children = append(n.children, child)
 	} else if isFile {
-		// путь мог добавиться раньше как директория — не бывает,
-		// но на всякий случай фиксируем
 		child.isFile = true
 	}
 	child.insert(parts[1:])

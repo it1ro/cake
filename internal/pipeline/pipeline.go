@@ -17,21 +17,23 @@ const (
 )
 
 type Options struct {
-	Root     string
-	Includes []string
-	Excludes []string
-	MaxSize  int64
-	Output   string
-	Mode     Mode
-	KeepDoc  bool
+	Root         string
+	Includes     []string
+	Excludes     []string
+	MaxSize      int64
+	Output       string
+	Mode         Mode
+	KeepDoc      bool
+	UseGitignore bool
 }
 
 func Run(opts Options) error {
 	entries, err := walker.Walk(walker.Options{
-		Root:     opts.Root,
-		Includes: opts.Includes,
-		Excludes: opts.Excludes,
-		MaxSize:  opts.MaxSize,
+		Root:         opts.Root,
+		Includes:     opts.Includes,
+		Excludes:     opts.Excludes,
+		MaxSize:      opts.MaxSize,
+		UseGitignore: opts.UseGitignore,
 	})
 	if err != nil {
 		return err

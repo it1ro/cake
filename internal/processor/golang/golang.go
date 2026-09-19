@@ -1,7 +1,6 @@
-package golang
-
 // Package golang реализует процессор для .go файлов:
 // strip комментариев с сохранением валидности кода.
+package golang
 
 import (
 	"bytes"

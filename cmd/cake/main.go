@@ -19,6 +19,7 @@ var (
 )
 
 func main() {
+	cli.SetVersion(version, commit, date)
 	if err := cli.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
