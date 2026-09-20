@@ -31,6 +31,14 @@ func Plain(ctx types.Context, w io.Writer) error {
 		bw.WriteString(walker.Tree(entries))
 	}
 
+	if len(ctx.Omitted) > 0 {
+		bw.WriteString("\nomitted:\n")
+		for _, o := range ctx.Omitted {
+			fmt.Fprintf(bw, "  %s — %d files (~%d tok)\n",
+				o.Path, o.Files, o.Tokens)
+		}
+	}
+
 	for _, f := range ctx.Files {
 		bw.WriteString("\n")
 		fmt.Fprintf(bw, "────── %s (%s) ──────\n", f.Entry.Path, f.Entry.Language)

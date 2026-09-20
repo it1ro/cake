@@ -15,11 +15,21 @@ type ProcessedFile struct {
 	Lines   int
 }
 
+// OmittedDir — схлопнутая директория, исключённая из вывода
+// из-за --budget или --context-limit. Модель видит, что код был,
+// и может запросить его отдельно.
+type OmittedDir struct {
+	Path   string // с trailing slash: "internal/"
+	Files  int
+	Tokens int
+}
+
 // Context — всё, что уходит в render.
 type Context struct {
 	Project string
 	Root    string
 	Files   []ProcessedFile
-	Tokens  int // оценочное число токенов
-	Dropped int // файлов отброшено из-за --budget
+	Tokens  int
+	Dropped int
+	Omitted []OmittedDir
 }

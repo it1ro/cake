@@ -1,3 +1,5 @@
+// internal/render/xml.go
+
 package render
 
 import (
@@ -10,8 +12,25 @@ import (
 	"github.com/it1ro/cake/pkg/types"
 )
 
-// XML рендерит Context в XML-подобный формат.
-// Стриминг: пишем по одному файлу, не буферизуем весь вывод.
+// CDATA-маркеры.
+//
+// Close:  ]]]]><![CDATA[>  — 4 ']' + '>' + <![CDATA[ + '>'
+//
+//	Парсер видит: ]] (текст в текущем CDATA) + ]]> (закрытие)
+//	+ <![CDATA[ (открытие нового) + > (текст в новом).
+//	Поэтому содержимое между <![CDATA[ и этим маркером может
+//	безопасно содержать ]]>.
+//
+// Escape: ]]]]]]><![CDATA[><![CDATA[>  — 6 ']' + два <![CDATA[
+//
+//	На это заменяется close-маркер, если он встретился в самом
+//	содержимом. Замена добавляет два ']' и ещё один <![CDATA[,
+//	чтобы наивный close-маркер внутри текста не закрыл блок.
+const (
+	cdataCloseMarker = "]]]]><![CDATA[>"
+	cdataEscape      = "]]]]]]><![CDATA[><![CDATA[>"
+)
+
 func XML(ctx types.Context, w io.Writer) error {
 	bw := bufio.NewWriter(w)
 	defer bw.Flush()
@@ -30,19 +49,28 @@ func XML(ctx types.Context, w io.Writer) error {
 
 	bw.WriteString("  <tree><![CDATA[\n")
 	bw.WriteString(indent(walker.Tree(entries), "    "))
-	bw.WriteString("  ]]></tree>\n\n")
+	bw.WriteString("  " + cdataCloseMarker + "</tree>\n\n")
+
+	if len(ctx.Omitted) > 0 {
+		fmt.Fprintf(bw, "  <omitted count=\"%d\">\n", ctx.Dropped)
+		for _, o := range ctx.Omitted {
+			fmt.Fprintf(bw, "    <dir path=%q files=\"%d\" tokens=\"%d\"/>\n",
+				o.Path, o.Files, o.Tokens)
+		}
+		bw.WriteString("  </omitted>\n\n")
+	}
 
 	for _, f := range ctx.Files {
 		fmt.Fprintf(bw, "  <file path=%q lang=%q lines=\"%d\" bytes=\"%d\">\n",
 			f.Entry.Path, f.Entry.Language, f.Lines, len(f.Content))
 		bw.WriteString("  <![CDATA[\n")
 
-		content := strings.ReplaceAll(string(f.Content), "]]>", "]]]]><![CDATA[>")
+		content := strings.ReplaceAll(string(f.Content), cdataCloseMarker, cdataEscape)
 		bw.WriteString(content)
 		if len(content) > 0 && content[len(content)-1] != '\n' {
 			bw.WriteByte('\n')
 		}
-		bw.WriteString("  ]]>\n")
+		bw.WriteString("  " + cdataCloseMarker + "\n")
 		bw.WriteString("  </file>\n\n")
 	}
 

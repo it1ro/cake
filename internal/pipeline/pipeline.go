@@ -17,8 +17,8 @@ import (
 type Mode int
 
 const (
-	ModeDump  Mode = iota // как есть
-	ModeClean             // через процессор (strip comments и т.п.)
+	ModeDump Mode = iota
+	ModeClean
 )
 
 type Options struct {
@@ -34,17 +34,24 @@ type Options struct {
 	Budget       int
 	Clipboard    bool
 
-	// Summary — куда написать краткий отчёт после копирования
-	// в буфер (OSC 52). nil → os.Stderr. Игнорируется при
-	// Clipboard=false.
+	// Лимит контекста (review §D4, §D11). ContextLimit == 0 —
+	// проверок нет. Reserve < 0 означает «посчитать автоматически»;
+	// Reserve == 0 при явно заданном ContextLimit — тоже.
+	ContextLimit int
+	Reserve      int
+	OnOverflow   OverflowMode
+
+	// Report — куда печатать диагностику переполнения.
+	// nil → stderr. ReportFile — путь к JSON-версии.
+	Report     io.Writer
+	ReportFile string
+
+	// Summary — куда писать краткий отчёт после clipboard.
 	Summary io.Writer
 }
 
-// Plan — обход ФС и применение фильтров (gitignore, include/exclude,
-// max-size, отсечение бинарников). Возвращает отсортированный список.
-//
-// Отдельно от Run, чтобы TUI мог показать файлы до фактического
-// рендера и дать пользователю отредактировать выбор.
+// Plan — обход ФС и применение фильтров. См. комментарий в
+// walker.Options.
 func Plan(opts Options) ([]types.FileEntry, error) {
 	return walker.Walk(walker.Options{
 		Root:         opts.Root,
@@ -65,18 +72,39 @@ func Run(opts Options) error {
 }
 
 // RunWith — обработка и рендер для указанного набора файлов.
-// files — обычно результат Plan; TUI может передать отредактированный
-// пользователем подсписок.
 //
-// Куда пишется вывод:
+// Порядок:
+//  1. Dump pre-flight: оценка по Size, без чтения содержимого.
+//     Если переполнение — handleOverflow (fail/drop).
+//  2. Чтение и (в clean) прогон через процессор.
+//  3. Clean post-flight: точная оценка по Content.
+//  4. Бюджетный фильтр (жадный, по Content).
+//  5. Рендер в target.
+//
+// Куда идёт вывод:
 //
 //	--output               → файл
-//	--clipboard            → только буфер (stdout не засоряем)
+//	--clipboard            → только буфер, stdout молчит
 //	--output + --clipboard → файл + буфер
 //	без флагов             → stdout
-//
-// Summary после clipboard — в stderr (или opts.Summary).
 func RunWith(opts Options, files []types.FileEntry) error {
+	// 1. Dump pre-flight.
+	if opts.Mode == ModeDump {
+		contentTokens := 0
+		for _, e := range files {
+			contentTokens += tokens.EstimateSize(e.Size)
+		}
+		if r := Check(opts, files, CheckInput{
+			ContentTokens: contentTokens,
+			Exact:         true, // в dump Size/4 == len/4
+		}); r != nil {
+			if err := handleOverflow(&opts, r); err != nil {
+				return err
+			}
+		}
+	}
+
+	// 2. Process.
 	procOpts := processor.Options{KeepDoc: opts.KeepDoc}
 	processed := make([]types.ProcessedFile, 0, len(files))
 	for _, e := range files {
@@ -84,7 +112,6 @@ func RunWith(opts Options, files []types.FileEntry) error {
 		if err != nil {
 			continue
 		}
-
 		if opts.Mode == ModeClean {
 			p := processor.For(e.Path)
 			out, err := p.Process(e.Path, content, procOpts)
@@ -92,7 +119,6 @@ func RunWith(opts Options, files []types.FileEntry) error {
 				content = out
 			}
 		}
-
 		processed = append(processed, types.ProcessedFile{
 			Entry:   e,
 			Content: content,
@@ -100,29 +126,24 @@ func RunWith(opts Options, files []types.FileEntry) error {
 		})
 	}
 
-	// Токены + бюджет.
-	// Жадный фильтр: если файл не влезает — пропускаем его и
-	// пробуем следующий (в отсортированном списке мелкий файл
-	// может пройти после крупного). Порядок сохраняется.
-	total := 0
-	dropped := 0
-	if opts.Budget > 0 {
-		kept := processed[:0] // reuse backing array
+	// 3. Clean post-flight.
+	if opts.Mode == ModeClean {
+		contentTokens := 0
 		for _, f := range processed {
-			t := tokens.Estimate(f.Content)
-			if total+t > opts.Budget {
-				dropped++
-				continue
-			}
-			total += t
-			kept = append(kept, f)
+			contentTokens += tokens.Estimate(f.Content)
 		}
-		processed = kept
-	} else {
-		for _, f := range processed {
-			total += tokens.Estimate(f.Content)
+		if r := Check(opts, files, CheckInput{
+			ContentTokens: contentTokens,
+			Exact:         true,
+		}); r != nil {
+			if err := handleOverflow(&opts, r); err != nil {
+				return err
+			}
 		}
 	}
+
+	// 4. Бюджетный фильтр.
+	processed, total, dropped := applyBudget(opts, processed)
 
 	ctx := types.Context{
 		Project: opts.Root,
@@ -132,11 +153,6 @@ func RunWith(opts Options, files []types.FileEntry) error {
 		Dropped: dropped,
 	}
 
-	// Куда идёт рендер:
-	//   --output file              → файл
-	//   --clipboard                → только буфер, stdout молчит
-	//   --output file --clipboard  → файл + буфер
-	//   по умолчанию               → stdout
 	var fileOut io.Writer
 	if opts.Output != "" {
 		f, err := os.Create(opts.Output)
@@ -171,6 +187,30 @@ func RunWith(opts Options, files []types.FileEntry) error {
 		writeSummary(opts.Summary, ctx, buf.Len())
 	}
 	return nil
+}
+
+// applyBudget — жадный фильтр по содержимому. Если opts.Budget == 0
+// — ничего не режет.
+func applyBudget(opts Options, processed []types.ProcessedFile) ([]types.ProcessedFile, int, int) {
+	total := 0
+	dropped := 0
+	if opts.Budget <= 0 {
+		for _, f := range processed {
+			total += tokens.Estimate(f.Content)
+		}
+		return processed, total, dropped
+	}
+	kept := processed[:0]
+	for _, f := range processed {
+		t := tokens.Estimate(f.Content)
+		if total+t > opts.Budget {
+			dropped++
+			continue
+		}
+		total += t
+		kept = append(kept, f)
+	}
+	return kept, total, dropped
 }
 
 func countLines(b []byte) int {

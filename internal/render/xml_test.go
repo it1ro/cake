@@ -65,26 +65,6 @@ func TestXML_EscapesCDATA(t *testing.T) {
 	}
 }
 
-// Обратный тест: файл без ]]> не должен получать лишних эскейпов.
-func TestXML_NoEscapingWhenNotNeeded(t *testing.T) {
-	ctx := types.Context{
-		Project: "test",
-		Files: []types.ProcessedFile{
-			{
-				Entry:   types.FileEntry{Path: "a.go", Language: "go"},
-				Content: []byte("package a\n"),
-			},
-		},
-	}
-	var buf bytes.Buffer
-	if err := XML(ctx, &buf); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(buf.String(), "]]]]><![CDATA[>") {
-		t.Errorf("unexpected CDATA escape:\n%s", buf.String())
-	}
-}
-
 // Все атрибуты должны быть в кавычках — иначе XML невалиден
 // и часть парсеров отвергает документ.
 func TestXML_AllAttributesQuoted(t *testing.T) {
@@ -113,5 +93,58 @@ func TestXML_AllAttributesQuoted(t *testing.T) {
 		if strings.Contains(trimmed, "=") && !strings.Contains(trimmed, `="`) {
 			t.Errorf("unquoted attribute in line: %s", line)
 		}
+	}
+}
+
+// Без cdataCloseMarker в содержимом рендер не должен добавлять
+// экранирующий двойной CDATA. Считаем закрывающие маркеры: для
+// одного <tree> и одного <file> их ровно 2.
+func TestXML_NoEscapingWhenNotNeeded(t *testing.T) {
+	ctx := types.Context{
+		Project: "test",
+		Files: []types.ProcessedFile{
+			{
+				Entry:   types.FileEntry{Path: "a.go", Language: "go"},
+				Content: []byte("package a\n"),
+			},
+		},
+	}
+	var buf bytes.Buffer
+	if err := XML(ctx, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+
+	// Закрывающих маркеров ровно 2: для <tree> и для <file>.
+	if got := strings.Count(out, cdataCloseMarker); got != 2 {
+		t.Errorf("want 2 CDATA close markers, got %d:\n%s", got, out)
+	}
+	// Экранированного варианта быть не должно. cdataEscape длиннее
+	// cdataCloseMarker, поэтому его наличие — точный признак, что
+	// применили escape к содержимому.
+	if strings.Contains(out, cdataEscape) {
+		t.Errorf("unexpected CDATA escape:\n%s", out)
+	}
+}
+
+// Константы — не магические строки: close должен начинаться
+// ровно с четырёх ']', escape — ровно с шести. Ошибка в один ']'
+// ломает XML-парсер у LLM, поэтому фиксируем форму отдельно.
+func TestCDATAMarkerShape(t *testing.T) {
+	if !strings.HasPrefix(cdataCloseMarker, "]]]]>") {
+		t.Errorf("cdataCloseMarker должен начинаться с ']]]]>', got %q",
+			cdataCloseMarker)
+	}
+	if strings.HasPrefix(cdataCloseMarker, "]]]]]>") {
+		t.Errorf("cdataCloseMarker: лишний ']' в начале: %q", cdataCloseMarker)
+	}
+	if !strings.HasPrefix(cdataEscape, "]]]]]]>") {
+		t.Errorf("cdataEscape должен начинаться с ']]]]]]>', got %q", cdataEscape)
+	}
+	// Escape содержит close-маркер начиная с позиции 2 — это и есть
+	// механизм: «сдвинули на два ']', чтобы наивный close не сработал».
+	if !strings.Contains(cdataEscape, cdataCloseMarker) {
+		t.Errorf("cdataEscape должен содержать cdataCloseMarker:\n  escape=%q\n  marker=%q",
+			cdataEscape, cdataCloseMarker)
 	}
 }

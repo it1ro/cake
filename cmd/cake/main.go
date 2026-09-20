@@ -1,14 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/it1ro/cake/internal/cli"
+	"github.com/it1ro/cake/internal/pipeline"
 
-	// Регистрация процессоров через init().
-	// Порядок не важен, но перечислить все нужно здесь явно,
-	// чтобы линтер не удалял import.
 	_ "github.com/it1ro/cake/internal/processor/golang"
 )
 
@@ -21,6 +20,13 @@ var (
 func main() {
 	cli.SetVersion(version, commit, date)
 	if err := cli.Execute(); err != nil {
+		// Переполнение контекста — отчёт уже напечатан pipeline'ом
+		// в stderr, exit 3 (review §D2). Отличается от обычной
+		// ошибки (exit 1) на уровне скриптов.
+		var oe *pipeline.OverflowError
+		if errors.As(err, &oe) {
+			os.Exit(3)
+		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

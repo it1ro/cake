@@ -25,29 +25,38 @@ var rootCmd = &cobra.Command{
 Команды:
   dump  [path]   полный тегированный дамп
   clean [path]   Go-код без комментариев
-  pick  [path]   интерактивный выбор файлов`,
-	SilenceUsage: true,
-	Args:         cobra.MaximumNArgs(1),
+  pick  [path]   интерактивный выбор файлов
+
+Коды выхода:
+  0  успех
+  1  ошибка (не смогли прочитать файл и т.п.)
+  3  переполнение контекста (при --on-overflow=fail)`,
+	SilenceUsage:  true,
+	SilenceErrors: true, // печать ошибок — только в main.go
+	Args:          cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return runPick(nil)
 		}
-		return runQuickDump(args[0])
+		return runQuickDump(cmd, args[0])
 	},
 }
 
 // runQuickDump — неинтерактивный сценарий "cake <path>":
 // дамп всего проекта (с учётом .gitignore) в буфер обмена.
-// Stdout молчит — пользователь вставит содержимое в редактор.
-func runQuickDump(root string) error {
-	return pipeline.Run(pipeline.Options{
+func runQuickDump(cmd *cobra.Command, root string) error {
+	opts := pipeline.Options{
 		Root:         root,
 		Mode:         pipeline.ModeDump,
 		Format:       render.FormatXML,
 		UseGitignore: true,
 		MaxSize:      1 << 20,
 		Clipboard:    true,
-	})
+	}
+	if err := applyLimitFlags(cmd, &opts); err != nil {
+		return err
+	}
+	return pipeline.Run(opts)
 }
 
 // Execute — точка входа CLI. Вызывается из cmd/cake/main.go.
@@ -55,4 +64,8 @@ func Execute() error { return rootCmd.Execute() }
 
 func SetVersion(v, c, d string) {
 	rootCmd.Version = fmt.Sprintf("%s (%s, %s)", v, c, d)
+}
+
+func init() {
+	registerLimitFlags()
 }

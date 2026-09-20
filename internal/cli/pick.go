@@ -46,7 +46,22 @@ var pickCmd = &cobra.Command{
 Учитывает .gitignore (корневой и вложенные) по умолчанию.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runPick(args)
+		if len(args) > 0 {
+			cleanOpts.Root = args[0]
+		}
+		if cleanOpts.Root == "" {
+			cleanOpts.Root = "."
+		}
+		f, err := render.Parse(cleanFormat)
+		if err != nil {
+			return err
+		}
+		cleanOpts.Format = f
+		cleanOpts.Clipboard = cleanClipboard
+		cleanOpts.Mode = pipeline.ModeClean
+		cleanOpts.KeepDoc = cleanKeepDoc
+		cleanOpts.UseGitignore = !cleanNoGitignore
+		return pipeline.Run(cleanOpts)
 	},
 }
 

@@ -29,6 +29,14 @@ func Markdown(ctx types.Context, w io.Writer) error {
 		entries[i] = f.Entry
 	}
 	bw.WriteString("## Tree\n\n```\n")
+	if len(ctx.Omitted) > 0 {
+		bw.WriteString("## Omitted\n\n")
+		for _, o := range ctx.Omitted {
+			fmt.Fprintf(bw, "- `%s` — %d files (~%d tok)\n",
+				o.Path, o.Files, o.Tokens)
+		}
+		bw.WriteString("\n")
+	}
 	bw.WriteString(walker.Tree(entries))
 	bw.WriteString("```\n\n")
 

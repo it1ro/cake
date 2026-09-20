@@ -43,6 +43,9 @@ var dumpCmd = &cobra.Command{
 		dumpOpts.Clipboard = dumpClipboard
 		dumpOpts.Mode = pipeline.ModeDump
 		dumpOpts.UseGitignore = !dumpNoGitignore
+		if err := applyLimitFlags(cmd, &dumpOpts); err != nil {
+			return err
+		}
 		return pipeline.Run(dumpOpts)
 	},
 }
