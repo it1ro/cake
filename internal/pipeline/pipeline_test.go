@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -49,7 +50,6 @@ func TestPipeline_Budget(t *testing.T) {
 		t.Errorf("want 2 files, got %d\n--- got ---\n%s",
 			strings.Count(got, "<file "), got)
 	}
-	// Убеждаемся, что не осталось tokens="0".
 	if strings.Contains(got, `tokens="0"`) {
 		t.Errorf("tokens not estimated:\n%s", got)
 	}
@@ -80,14 +80,12 @@ func TestPipeline_NoBudget_KeepsAll(t *testing.T) {
 
 // При --clipboard без --output в stdout не должно уходить ничего:
 // escape-последовательность OSC 52 не должна сама попасть в пайп.
-// Тест подменяет os.Stdout временным пайпом и проверяет размер.
 func TestRunWith_Clipboard_NoStdout(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Перехватываем os.Stdout.
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -96,17 +94,11 @@ func TestRunWith_Clipboard_NoStdout(t *testing.T) {
 	os.Stdout = w
 	defer func() { os.Stdout = orig }()
 
-	// В тестах нет tty — CopyToTTY упадёт. Это ожидаемо
-	// и нас не интересует: важно, что в stdout ничего не ушло.
-	// Поэтому Summary направляем в io.Discard, а ошибку
-	// clipboard игнорируем через флаг.
 	files, err := Plan(Options{Root: root, UseGitignore: false, MaxSize: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Запускаем в отдельной горутине — пайп может блокироваться,
-	// если никто не читает.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -119,7 +111,7 @@ func TestRunWith_Clipboard_NoStdout(t *testing.T) {
 			Clipboard:    true,
 			Summary:      io.Discard,
 		}, files)
-		w.Close() // закроем writer, чтобы reader вернул EOF
+		w.Close()
 	}()
 
 	var buf bytes.Buffer
@@ -129,5 +121,162 @@ func TestRunWith_Clipboard_NoStdout(t *testing.T) {
 	if buf.Len() != 0 {
 		t.Errorf("при --clipboard stdout должен быть пуст, got %d bytes:\n%s",
 			buf.Len(), buf.String())
+	}
+}
+
+// ─── Таблица состояний 2.2 (review §10) ─────────────────────────────
+
+// TestOverflow_StateTable покрывает все шесть строк таблицы 2.2:
+// комбинации limit × budget × on-overflow.
+//
+// Файлы специально крупные (4000 байт = ~1000 токенов), чтобы
+// переполнение срабатывало в каждом кейсе с limit.
+func TestOverflow_StateTable(t *testing.T) {
+	mkFiles := func(t *testing.T) string {
+		root := t.TempDir()
+		body := strings.Repeat("x", 4000)
+		for _, n := range []string{"a.go", "b.go", "c.go"} {
+			if err := os.WriteFile(
+				filepath.Join(root, n), []byte(body), 0o644,
+			); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return root
+	}
+
+	tests := []struct {
+		name       string
+		limit      int
+		budget     int
+		onOverflow OverflowMode
+		wantErr    bool
+		wantDrop   bool
+	}{
+		// 1. limit нет, budget нет: никаких проверок.
+		{"no_limit_no_budget", 0, 0, OverflowFail, false, false},
+		// 2. limit нет, budget N: жёсткая обрезка, без OverflowError.
+		{"budget_only", 0, 1500, OverflowFail, false, true},
+		// 3. limit L, fail: превышение → OverflowError, exit 3.
+		{"limit_fail", 1000, 0, OverflowFail, true, false},
+		// 4. limit L, drop: обрезка до потолка, exit 0.
+		{"limit_drop", 1000, 0, OverflowDrop, false, true},
+		// 5. limit L + budget N (> потолка), fail: всё равно
+		//    OverflowError, потому что авторитетная проверка идёт
+		//    по набору до бюджетного фильтра.
+		{"limit_and_budget_fail", 1000, 1500, OverflowFail, true, false},
+		// 6. limit L + budget N (> потолка), drop: потолок =
+		//    min(budget, L−reserve) = 900; дополнительно warning.
+		{"limit_and_budget_drop", 1000, 1500, OverflowDrop, false, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := mkFiles(t)
+			out := filepath.Join(t.TempDir(), "out.xml")
+			opts := Options{
+				Root:         root,
+				Output:       out,
+				Format:       render.FormatXML,
+				Mode:         ModeDump,
+				UseGitignore: false,
+				MaxSize:      1 << 20,
+				ContextLimit: tc.limit,
+				Reserve:      100, // явно, чтобы не зависеть от DefaultReserve
+				Budget:       tc.budget,
+				OnOverflow:   tc.onOverflow,
+				Report:       io.Discard,
+			}
+			err := Run(opts)
+
+			var oe *OverflowError
+			gotErr := errors.As(err, &oe)
+			if gotErr != tc.wantErr {
+				t.Fatalf("err = %v, want OverflowError=%v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				// В fail не должно быть ни байта вывода.
+				if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+					t.Errorf("fail: output file must not exist")
+				}
+				return
+			}
+			data, err := os.ReadFile(out)
+			if err != nil {
+				t.Fatalf("read output: %v", err)
+			}
+			hasDropped := strings.Contains(string(data), `dropped="`)
+			if hasDropped != tc.wantDrop {
+				t.Errorf("dropped attr = %v, want %v\n%s",
+					hasDropped, tc.wantDrop, data)
+			}
+		})
+	}
+}
+
+// Строка 6 таблицы: budget > L − reserve — предупреждение в stderr.
+func TestOverflow_BudgetOverLimitWarns(t *testing.T) {
+	root := t.TempDir()
+	body := strings.Repeat("x", 4000)
+	for _, n := range []string{"a.go", "b.go", "c.go"} {
+		if err := os.WriteFile(filepath.Join(root, n), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var stderr bytes.Buffer
+	out := filepath.Join(t.TempDir(), "out.xml")
+	_ = Run(Options{
+		Root:         root,
+		Output:       out,
+		Format:       render.FormatXML,
+		Mode:         ModeDump,
+		UseGitignore: false,
+		MaxSize:      1 << 20,
+		ContextLimit: 1000,
+		Reserve:      100,
+		Budget:       5000, // > 900
+		OnOverflow:   OverflowDrop,
+		Report:       &stderr,
+	})
+	if !strings.Contains(stderr.String(), "--budget") {
+		t.Errorf("warn expected, got: %q", stderr.String())
+	}
+}
+
+// dump pre-flight: переполнение обнаруживается до чтения файлов.
+// AbsPath указывает на несуществующий файл — RunWith всё равно
+// должен вернуть OverflowError, а не упасть на I/O.
+func TestOverflow_DumpPreflight_NoReads(t *testing.T) {
+	root := t.TempDir()
+	body := strings.Repeat("x", 8000)
+	if err := os.WriteFile(
+		filepath.Join(root, "big.go"), []byte(body), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	files, err := Plan(Options{Root: root, UseGitignore: false, MaxSize: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Портим AbsPath: файл существует, но RunWith не должен его
+	// читать, потому что pre-flight срабатывает раньше I/O.
+	files[0].AbsPath = "/definitely/does/not/exist"
+
+	err = RunWith(Options{
+		Root:         root,
+		Mode:         ModeDump,
+		Format:       render.FormatXML,
+		UseGitignore: false,
+		MaxSize:      1 << 20,
+		ContextLimit: 100,
+		Reserve:      10,
+		OnOverflow:   OverflowFail,
+		Report:       io.Discard,
+	}, files)
+
+	var oe *OverflowError
+	if !errors.As(err, &oe) {
+		t.Fatalf("want OverflowError before I/O, got %v", err)
 	}
 }

@@ -22,7 +22,7 @@ var pickCmd = &cobra.Command{
 	Use:   "pick [path]",
 	Short: "Интерактивный выбор файлов",
 	Long: `Открывает TUI со списком файлов проекта.
-... (без изменений в тексте Long)
+Стартует в древовидном режиме; переключение — клавишей t.
 Учитывает .gitignore (корневой и вложенные) по умолчанию.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -43,17 +43,18 @@ func runPick(cmd *cobra.Command, args []string) error {
 	if pickOpts.Root == "" {
 		pickOpts.Root = "."
 	}
+	pickOpts.Clipboard = pickClipboard
+	pickOpts.Mode = pipeline.ModeDump
+	pickOpts.UseGitignore = !pickNoGitignore
+
+	if err := applyFlags(cmd, &pickOpts, &pickFormat); err != nil {
+		return err
+	}
 	f, err := render.Parse(pickFormat)
 	if err != nil {
 		return err
 	}
 	pickOpts.Format = f
-	pickOpts.Clipboard = pickClipboard
-	pickOpts.Mode = pipeline.ModeDump
-	pickOpts.UseGitignore = !pickNoGitignore
-	if err := applyLimitFlags(cmd, &pickOpts); err != nil {
-		return err
-	}
 
 	files, err := pipeline.Plan(pickOpts)
 	if err != nil {

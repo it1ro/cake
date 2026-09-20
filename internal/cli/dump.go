@@ -35,17 +35,18 @@ var dumpCmd = &cobra.Command{
 		if dumpOpts.Root == "" {
 			dumpOpts.Root = "."
 		}
+		dumpOpts.Clipboard = dumpClipboard
+		dumpOpts.Mode = pipeline.ModeDump
+		dumpOpts.UseGitignore = !dumpNoGitignore
+
+		if err := applyFlags(cmd, &dumpOpts, &dumpFormat); err != nil {
+			return err
+		}
 		f, err := render.Parse(dumpFormat)
 		if err != nil {
 			return err
 		}
 		dumpOpts.Format = f
-		dumpOpts.Clipboard = dumpClipboard
-		dumpOpts.Mode = pipeline.ModeDump
-		dumpOpts.UseGitignore = !dumpNoGitignore
-		if err := applyLimitFlags(cmd, &dumpOpts); err != nil {
-			return err
-		}
 		return pipeline.Run(dumpOpts)
 	},
 }

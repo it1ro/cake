@@ -117,13 +117,19 @@ func (o Options) reportWriter() io.Writer {
 // handleOverflow обрабатывает переполнение. Возвращает nil при
 // OverflowDrop (модифицирует opts.Budget, чтобы бюджетный фильтр
 // обрезал набор) и *OverflowError при OverflowFail.
+//
+// Ошибка записи --report-file не глотается: если путь указывает
+// в несуществующую директорию, пользователь узнает об этом
+// сразу, а не по отсутствию файла в CI.
 func handleOverflow(opts *Options, r *report.Report) error {
 	if opts.OnOverflow == OverflowDrop {
 		fmt.Fprintf(opts.reportWriter(),
 			"⚠ контекст обрезан до потолка %d tok (лимит %d, резерв %d)\n",
 			r.Ceiling, r.Limit, r.Reserve)
 		if opts.ReportFile != "" {
-			_ = r.WriteJSON(opts.ReportFile)
+			if err := r.WriteJSON(opts.ReportFile); err != nil {
+				return fmt.Errorf("report-file %s: %w", opts.ReportFile, err)
+			}
 		}
 		// Жёсткий бюджет: применяется в бюджетном фильтре ниже.
 		opts.Budget = r.Ceiling
@@ -131,7 +137,9 @@ func handleOverflow(opts *Options, r *report.Report) error {
 	}
 	r.Write(opts.reportWriter())
 	if opts.ReportFile != "" {
-		_ = r.WriteJSON(opts.ReportFile)
+		if err := r.WriteJSON(opts.ReportFile); err != nil {
+			return fmt.Errorf("report-file %s: %w", opts.ReportFile, err)
+		}
 	}
 	return &OverflowError{Report: r}
 }

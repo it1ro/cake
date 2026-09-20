@@ -36,18 +36,19 @@ Build-constraints (//go:build, // +build) и директивы компилят
 		if cleanOpts.Root == "" {
 			cleanOpts.Root = "."
 		}
+		cleanOpts.Clipboard = cleanClipboard
+		cleanOpts.Mode = pipeline.ModeClean
+		cleanOpts.KeepDoc = cleanKeepDoc
+		cleanOpts.UseGitignore = !cleanNoGitignore
+
+		if err := applyFlags(cmd, &cleanOpts, &cleanFormat); err != nil {
+			return err
+		}
 		f, err := render.Parse(cleanFormat)
 		if err != nil {
 			return err
 		}
 		cleanOpts.Format = f
-		cleanOpts.Clipboard = cleanClipboard
-		cleanOpts.Mode = pipeline.ModeClean
-		cleanOpts.KeepDoc = cleanKeepDoc
-		cleanOpts.UseGitignore = !cleanNoGitignore
-		if err := applyLimitFlags(cmd, &cleanOpts); err != nil {
-			return err
-		}
 		return pipeline.Run(cleanOpts)
 	},
 }

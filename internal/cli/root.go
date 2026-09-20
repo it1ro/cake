@@ -44,18 +44,27 @@ var rootCmd = &cobra.Command{
 
 // runQuickDump — неинтерактивный сценарий "cake <path>":
 // дамп всего проекта (с учётом .gitignore) в буфер обмена.
+//
+// Format получается через applyFlags → render.Parse, чтобы
+// `format = "markdown"` в cake.toml работал и для этой точки
+// входа, а не только для подкоманд.
 func runQuickDump(cmd *cobra.Command, root string) error {
 	opts := pipeline.Options{
 		Root:         root,
 		Mode:         pipeline.ModeDump,
-		Format:       render.FormatXML,
 		UseGitignore: true,
 		MaxSize:      1 << 20,
 		Clipboard:    true,
 	}
-	if err := applyLimitFlags(cmd, &opts); err != nil {
+	format := "xml"
+	if err := applyFlags(cmd, &opts, &format); err != nil {
 		return err
 	}
+	f, err := render.Parse(format)
+	if err != nil {
+		return err
+	}
+	opts.Format = f
 	return pipeline.Run(opts)
 }
 

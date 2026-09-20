@@ -74,12 +74,13 @@ func Run(opts Options) error {
 // RunWith — обработка и рендер для указанного набора файлов.
 //
 // Порядок:
-//  1. Dump pre-flight: оценка по Size, без чтения содержимого.
+//  1. Warn: если --budget больше потолка от лимита — предупредить.
+//  2. Dump pre-flight: оценка по Size, без чтения содержимого.
 //     Если переполнение — handleOverflow (fail/drop).
-//  2. Чтение и (в clean) прогон через процессор.
-//  3. Clean post-flight: точная оценка по Content.
-//  4. Бюджетный фильтр (жадный, по Content).
-//  5. Рендер в target.
+//  3. Чтение и (в clean) прогон через процессор.
+//  4. Clean post-flight: точная оценка по Content.
+//  5. Бюджетный фильтр (жадный, по Content).
+//  6. Рендер в target.
 //
 // Куда идёт вывод:
 //
@@ -88,7 +89,9 @@ func Run(opts Options) error {
 //	--output + --clipboard → файл + буфер
 //	без флагов             → stdout
 func RunWith(opts Options, files []types.FileEntry) error {
-	// 1. Dump pre-flight.
+	warnBudgetOverLimit(opts)
+
+	// Dump pre-flight.
 	if opts.Mode == ModeDump {
 		contentTokens := 0
 		for _, e := range files {
@@ -104,7 +107,7 @@ func RunWith(opts Options, files []types.FileEntry) error {
 		}
 	}
 
-	// 2. Process.
+	// Process.
 	procOpts := processor.Options{KeepDoc: opts.KeepDoc}
 	processed := make([]types.ProcessedFile, 0, len(files))
 	for _, e := range files {
@@ -126,7 +129,7 @@ func RunWith(opts Options, files []types.FileEntry) error {
 		})
 	}
 
-	// 3. Clean post-flight.
+	// Clean post-flight.
 	if opts.Mode == ModeClean {
 		contentTokens := 0
 		for _, f := range processed {
@@ -142,7 +145,7 @@ func RunWith(opts Options, files []types.FileEntry) error {
 		}
 	}
 
-	// 4. Бюджетный фильтр.
+	// Бюджетный фильтр.
 	processed, total, dropped := applyBudget(opts, processed)
 
 	ctx := types.Context{
@@ -187,6 +190,26 @@ func RunWith(opts Options, files []types.FileEntry) error {
 		writeSummary(opts.Summary, ctx, buf.Len())
 	}
 	return nil
+}
+
+// warnBudgetOverLimit печатает предупреждение, если --budget больше
+// эффективного потолка от лимита (review §2.2, строка 6). Полезно
+// в --on-overflow=drop: пользователь видит, что реально обрезал
+// лимит, а не его бюджет.
+func warnBudgetOverLimit(opts Options) {
+	if opts.ContextLimit <= 0 || opts.Budget <= 0 {
+		return
+	}
+	reserve := opts.Reserve
+	if reserve <= 0 {
+		reserve = tokens.DefaultReserve(opts.ContextLimit)
+	}
+	limitCeiling := opts.ContextLimit - reserve
+	if opts.Budget > limitCeiling {
+		fmt.Fprintf(opts.reportWriter(),
+			"⚠ --budget %d больше потолка %d (limit %d − reserve %d); используется %d\n",
+			opts.Budget, limitCeiling, opts.ContextLimit, reserve, limitCeiling)
+	}
 }
 
 // applyBudget — жадный фильтр по содержимому. Если opts.Budget == 0

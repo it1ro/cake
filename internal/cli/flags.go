@@ -32,19 +32,27 @@ func registerLimitFlags() {
 		"профиль из cake.toml (по умолчанию [default])")
 }
 
-// applyLimitFlags накатывает cake.toml (если есть), затем
-// переопределяет значения из явно установленных CLI-флагов
-// (Changed). Правило: флаг > профиль > [default] > глобальный
-// > встроенный дефолт.
+// applyFlags накатывает cake.toml (если есть), затем переопределяет
+// значения из явно установленных CLI-флагов (Changed).
 //
-// Резерв в процентах разбирается один раз — против финального
-// ContextLimit, после CLI-переопределений. Иначе при
-// `cake.toml: reserve = "10%"` и `--context-limit 32k` резерв
-// считался бы от конфиг-лимита, а не от 32k.
+// Приоритет: флаг > профиль > [default] > глобальный > встроенный
+// дефолт. Списки (include/exclude) дополняются: сначала конфиг,
+// затем флаги. Явный сброс `--exclude ”` заменяет конфиг пустым
+// списком.
+//
+// format — указатель на строковую переменную команды
+// (dumpFormat / cleanFormat / pickFormat). Формат — свойство
+// команды, не pipeline: applyFlags кладёт в него значение из
+// конфига, только если флаг --format не был задан явно.
+//
+// Резерв в процентах разбирается один раз, в самом конце, против
+// финального ContextLimit (после всех Changed-переопределений).
+// Иначе при `cake.toml: reserve = "10%"` и `--context-limit 32k`
+// резерв считался бы от конфиг-лимита, а не от 32k.
 //
 // --profile без cake.toml — ошибка: пользователь явно указал
 // профиль, которого нет.
-func applyLimitFlags(cmd *cobra.Command, opts *pipeline.Options) error {
+func applyFlags(cmd *cobra.Command, opts *pipeline.Options, format *string) error {
 	loaded, err := config.Load(opts.Root, flagProfile)
 	if err != nil {
 		return err
@@ -53,16 +61,61 @@ func applyLimitFlags(cmd *cobra.Command, opts *pipeline.Options) error {
 		return fmt.Errorf("--profile %q: cake.toml not found", flagProfile)
 	}
 
-	// Скаляры — сразу. Резерв — отдельно, после CLI.
+	f := cmd.Flags()
+
+	// Снимок списков до слияния с конфигом: pflag уже положил
+	// сюда значения из --include/--exclude, если они были заданы;
+	// иначе — nil (дефолт StringSliceVarP). После mergeList
+	// opts.Includes/Excludes будут перезаписаны.
+	flagIncludes := opts.Includes
+	flagExcludes := opts.Excludes
+	hasFlagIncludes := f.Changed("include")
+	hasFlagExcludes := f.Changed("exclude")
+
 	var cfgReserve string
 	if loaded != nil {
-		if err := applyProfile(opts, loaded.Resolved); err != nil {
-			return err
-		}
-		cfgReserve = loaded.Resolved.Reserve
-	}
+		p := loaded.Resolved
 
-	f := cmd.Flags()
+		if p.ContextLimit != "" {
+			n, err := tokens.ParseCount(p.ContextLimit)
+			if err != nil {
+				return fmt.Errorf("cake.toml: context-limit: %w", err)
+			}
+			opts.ContextLimit = n
+		}
+		cfgReserve = p.Reserve
+
+		if p.OnOverflow != "" {
+			switch p.OnOverflow {
+			case "fail":
+				opts.OnOverflow = pipeline.OverflowFail
+			case "drop":
+				opts.OnOverflow = pipeline.OverflowDrop
+			default:
+				return fmt.Errorf(
+					"cake.toml: on-overflow: want fail|drop, got %q",
+					p.OnOverflow)
+			}
+		}
+		if p.Budget != nil {
+			opts.Budget = *p.Budget
+		}
+		if p.MaxSize != nil && !f.Changed("max-size") {
+			opts.MaxSize = *p.MaxSize
+		}
+		if p.KeepDoc != nil && !f.Changed("keep-doc") {
+			opts.KeepDoc = *p.KeepDoc
+		}
+		if p.UseGitignore != nil && !f.Changed("no-gitignore") {
+			opts.UseGitignore = *p.UseGitignore
+		}
+		if p.Format != "" && !f.Changed("format") {
+			*format = p.Format
+		}
+
+		opts.Includes = mergeList(p.Include, flagIncludes, hasFlagIncludes)
+		opts.Excludes = mergeList(p.Exclude, flagExcludes, hasFlagExcludes)
+	}
 
 	if f.Changed("context-limit") {
 		n, err := tokens.ParseCount(flagContextLimit)
@@ -72,10 +125,10 @@ func applyLimitFlags(cmd *cobra.Command, opts *pipeline.Options) error {
 		opts.ContextLimit = n
 	}
 
-	// Резерв: CLI > конфиг. Оба разбираются против уже
-	// финального ContextLimit. Пустая cfgReserve + не заданный
-	// флаг → opts.Reserve == 0, дальше сработает DefaultReserve
-	// в effectiveCeiling.
+	// Резерв: CLI > конфиг. Оба разбираются против финального
+	// ContextLimit. Пустая cfgReserve + не заданный флаг →
+	// opts.Reserve == 0, дальше сработает DefaultReserve в
+	// effectiveCeiling.
 	switch {
 	case f.Changed("reserve"):
 		n, err := tokens.ParseReserve(flagReserve, opts.ContextLimit)
@@ -108,29 +161,20 @@ func applyLimitFlags(cmd *cobra.Command, opts *pipeline.Options) error {
 	return nil
 }
 
-// applyProfile кладёт в Options всё, кроме резерва: резерв
-// разбирается отдельно, против финального ContextLimit.
-func applyProfile(opts *pipeline.Options, p config.Profile) error {
-	if p.ContextLimit != "" {
-		n, err := tokens.ParseCount(p.ContextLimit)
-		if err != nil {
-			return fmt.Errorf("cake.toml: context-limit: %w", err)
-		}
-		opts.ContextLimit = n
+// mergeList склеивает список из конфига и список из флагов
+// (конфиг впереди, флаги дополняют). Исключение — явный сброс:
+// `--exclude ”` в pflag даёт Changed=true и пустой срез
+// (readAsCSV("") → []string{}), трактуем это как «очистить
+// список конфига».
+func mergeList(cfg, flags []string, flagChanged bool) []string {
+	if flagChanged && len(flags) == 0 {
+		return nil
 	}
-	if p.OnOverflow != "" {
-		switch p.OnOverflow {
-		case "fail":
-			opts.OnOverflow = pipeline.OverflowFail
-		case "drop":
-			opts.OnOverflow = pipeline.OverflowDrop
-		default:
-			return fmt.Errorf(
-				"cake.toml: on-overflow: want fail|drop, got %q", p.OnOverflow)
-		}
+	if len(cfg) == 0 && len(flags) == 0 {
+		return nil
 	}
-	if p.Budget != nil {
-		opts.Budget = *p.Budget
-	}
-	return nil
+	out := make([]string, 0, len(cfg)+len(flags))
+	out = append(out, cfg...)
+	out = append(out, flags...)
+	return out
 }
