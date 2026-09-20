@@ -280,3 +280,106 @@ func TestOverflow_DumpPreflight_NoReads(t *testing.T) {
 		t.Fatalf("want OverflowError before I/O, got %v", err)
 	}
 }
+
+// Один маленький файл в корне влезает, два крупных в разных
+// каталогах — нет. Проверяем сразу три вещи: dropped="2",
+// <omitted count="2"> и схлопывание цепочки cmd/→cmd/cake/
+// (у cmd/ нет собственных файлов, ровно один ребёнок).
+//
+// Сортировка побайтовая: a_small.go < cmd/cake/main.go <
+// internal/a.go. Жадный фильтр идёт по порядку, поэтому «повезло»
+// именно корневому файлу. Класть первым большой файл из cmd/ —
+// значит проверить не то: cmd/cake/main.go влез бы, а оба
+// internal/* отброшены, и остался бы только бакет internal/.
+func TestRunWith_OmittedInXML(t *testing.T) {
+	root := t.TempDir()
+	big := strings.Repeat("x", 4000)  // ~1000 tok
+	small := strings.Repeat("x", 100) // ~25 tok
+
+	mustWrite := func(rel string, body string) {
+		t.Helper()
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite("a_small.go", small)
+	mustWrite("cmd/cake/main.go", big)
+	mustWrite("internal/a.go", big)
+
+	out := filepath.Join(t.TempDir(), "out.xml")
+	if err := Run(Options{
+		Root: root, Output: out,
+		Format:       render.FormatXML,
+		MaxSize:      1 << 20,
+		UseGitignore: false,
+		Budget:       1000, // хватает только на a_small.go
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+
+	if !strings.Contains(got, `dropped="2"`) {
+		t.Errorf("want dropped=\"2\"\n%s", got)
+	}
+	if !strings.Contains(got, `<omitted count="2">`) {
+		t.Errorf("want <omitted count=\"2\">\n%s", got)
+	}
+	// cmd/ → cmd/cake/ — цепочка без ветвления, один бакет.
+	if !strings.Contains(got, `path="cmd/cake/"`) {
+		t.Errorf("want bucket cmd/cake/\n%s", got)
+	}
+	// internal/ — файлы лежат прямо в нём, схлопывание
+	// останавливается на первом уровне.
+	if !strings.Contains(got, `path="internal/"`) {
+		t.Errorf("want bucket internal/\n%s", got)
+	}
+}
+
+// Один файл в корне + один в подкаталоге — оба отброшены. Должны
+// получить два бакета: "./" и "sub/".
+func TestRunWith_OmittedRootAndSub(t *testing.T) {
+	root := t.TempDir()
+	body := strings.Repeat("x", 4000)
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "sub", "b.go"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Третий файл нужен, чтобы бюджет влез только в него.
+	if err := os.WriteFile(filepath.Join(root, "z.go"), []byte(strings.Repeat("x", 100)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "out.xml")
+	if err := Run(Options{
+		Root: root, Output: out,
+		Format:       render.FormatXML,
+		MaxSize:      1 << 20,
+		UseGitignore: false,
+		Budget:       100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, _ := os.ReadFile(out)
+	got := string(data)
+	if !strings.Contains(got, `<dir path="./"`) {
+		t.Errorf("root bucket missing:\n%s", got)
+	}
+	if !strings.Contains(got, `<dir path="sub/"`) {
+		t.Errorf("sub bucket missing:\n%s", got)
+	}
+}

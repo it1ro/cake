@@ -212,6 +212,109 @@ func sortTrim(bs []Bucket, top int) []Bucket {
 	return bs
 }
 
+// ─── Omitted (схлопывание отброшенного) ─────────────────────────────
+
+// Omitted агрегирует отброшенные файлы в схлопнутые директории:
+// каталог без собственных файлов и с ровно одним дочерним
+// каталогом сливается с этим ребёнком. Так
+//
+//	vendor/k8s.io/api/types.go, vendor/k8s.io/api/more.go
+//
+// даёт один бакет "vendor/k8s.io/api/", а
+//
+//	internal/a.go, internal/b.go
+//
+// — бакет "internal/". Файлы в корне проекта идут в "./".
+//
+// Отличие от Aggregate: там правило «доминирующий ребёнок >50%»
+// останавливается на первом разветвлении и теряет мелких соседей.
+// Для Omitted нужна полная покрывающая картина: сумма Files по
+// всем OmittedDir равна len(items). Это контракт, который
+// проверяется тестом TestOmitted_CoversAllInput.
+//
+// Возвращает nil для пустого входа. Порядок — по токенам убыв.,
+// при равенстве — по имени.
+func Omitted(items []Item) []types.OmittedDir {
+	if len(items) == 0 {
+		return nil
+	}
+
+	// ownFiles/ownTokens — файлы, лежащие непосредственно в этом
+	// каталоге (не в подкаталогах). Останавливают схлопывание:
+	// «internal/x.go и internal/sub/y.go» не должны слиться
+	// в "internal/sub/".
+	//
+	// subFiles/subTokens — суммарно по поддереву, включая этот
+	// каталог. Нужны для итогового бакета, когда схлопывание
+	// остановилось.
+	type node struct {
+		children  map[string]*node
+		ownFiles  int
+		ownTokens int
+		subFiles  int
+		subTokens int
+	}
+	root := &node{children: map[string]*node{}}
+
+	for _, it := range items {
+		parts := strings.Split(it.Path, "/")
+		cur := root
+		cur.subFiles++
+		cur.subTokens += it.Tokens
+		for i := 0; i < len(parts)-1; i++ {
+			c := cur.children[parts[i]]
+			if c == nil {
+				c = &node{children: map[string]*node{}}
+				cur.children[parts[i]] = c
+			}
+			c.subFiles++
+			c.subTokens += it.Tokens
+			cur = c
+		}
+		cur.ownFiles++
+		cur.ownTokens += it.Tokens
+	}
+
+	var out []types.OmittedDir
+
+	// Корневые файлы (README.md, go.mod, …) — отдельный бакет.
+	if root.ownFiles > 0 {
+		out = append(out, types.OmittedDir{
+			Path:   "./",
+			Files:  root.ownFiles,
+			Tokens: root.ownTokens,
+		})
+	}
+
+	// Каждый верхнеуровневый каталог — своя цепочка схлопывания.
+	for name, c := range root.children {
+		cur := c
+		curPath := name
+		// Идём вглубь, пока каталог «прозрачный»: без собственных
+		// файлов и с единственным дочерним каталогом.
+		for cur.ownFiles == 0 && len(cur.children) == 1 {
+			for n, cc := range cur.children {
+				curPath = curPath + "/" + n
+				cur = cc
+				break
+			}
+		}
+		out = append(out, types.OmittedDir{
+			Path:   curPath + "/",
+			Files:  cur.subFiles,
+			Tokens: cur.subTokens,
+		})
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Tokens != out[j].Tokens {
+			return out[i].Tokens > out[j].Tokens
+		}
+		return out[i].Path < out[j].Path
+	})
+	return out
+}
+
 // ─── Меры ────────────────────────────────────────────────────────────
 
 func measures(p Params, items []Item, total int) []Measure {

@@ -9,6 +9,7 @@ import (
 	"github.com/it1ro/cake/internal/clipboard"
 	"github.com/it1ro/cake/internal/processor"
 	"github.com/it1ro/cake/internal/render"
+	"github.com/it1ro/cake/internal/report"
 	"github.com/it1ro/cake/internal/tokens"
 	"github.com/it1ro/cake/internal/walker"
 	"github.com/it1ro/cake/pkg/types"
@@ -146,7 +147,7 @@ func RunWith(opts Options, files []types.FileEntry) error {
 	}
 
 	// Бюджетный фильтр.
-	processed, total, dropped := applyBudget(opts, processed)
+	processed, total, dropped, omitted := applyBudget(opts, processed)
 
 	ctx := types.Context{
 		Project: opts.Root,
@@ -154,6 +155,7 @@ func RunWith(opts Options, files []types.FileEntry) error {
 		Files:   processed,
 		Tokens:  total,
 		Dropped: dropped,
+		Omitted: omitted,
 	}
 
 	var fileOut io.Writer
@@ -214,26 +216,42 @@ func warnBudgetOverLimit(opts Options) {
 
 // applyBudget — жадный фильтр по содержимому. Если opts.Budget == 0
 // — ничего не режет.
-func applyBudget(opts Options, processed []types.ProcessedFile) ([]types.ProcessedFile, int, int) {
-	total := 0
-	dropped := 0
+//
+// Возвращает: оставшиеся файлы, сумму их токенов, счётчик
+// отброшенных и схлопнутые директории отброшенного (review §D8).
+// Omitted пуст, если ничего не отбрасывалось. Сумма Files по
+// Omitted равна dropped — контракт, на который опираются рендеры
+// (<omitted count="N"> в XML, секция в markdown, omitted: в plain).
+func applyBudget(
+	opts Options,
+	processed []types.ProcessedFile,
+) ([]types.ProcessedFile, int, int, []types.OmittedDir) {
 	if opts.Budget <= 0 {
+		total := 0
 		for _, f := range processed {
 			total += tokens.Estimate(f.Content)
 		}
-		return processed, total, dropped
+		return processed, total, 0, nil
 	}
+
+	total := 0
 	kept := processed[:0]
+	var droppedItems []report.Item
+
 	for _, f := range processed {
 		t := tokens.Estimate(f.Content)
 		if total+t > opts.Budget {
-			dropped++
+			droppedItems = append(droppedItems, report.Item{
+				Path:   f.Entry.Path,
+				Tokens: t,
+			})
 			continue
 		}
 		total += t
 		kept = append(kept, f)
 	}
-	return kept, total, dropped
+
+	return kept, total, len(droppedItems), report.Omitted(droppedItems)
 }
 
 func countLines(b []byte) int {
