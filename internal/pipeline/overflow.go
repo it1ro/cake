@@ -51,7 +51,7 @@ func effectiveCeiling(opts Options) int {
 		return 0
 	}
 	reserve := opts.Reserve
-	if reserve < 0 {
+	if reserve <= 0 {
 		reserve = tokens.DefaultReserve(opts.ContextLimit)
 	}
 	ceiling := opts.ContextLimit - reserve
@@ -85,7 +85,7 @@ func Check(opts Options, entries []types.FileEntry, in CheckInput) *report.Repor
 	}
 
 	reserve := opts.Reserve
-	if reserve < 0 {
+	if reserve <= 0 {
 		reserve = tokens.DefaultReserve(opts.ContextLimit)
 	}
 	return report.Build(report.Params{

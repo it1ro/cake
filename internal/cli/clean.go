@@ -31,20 +31,24 @@ Build-constraints (//go:build, // +build) и директивы компилят
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) > 0 {
-			dumpOpts.Root = args[0]
+			cleanOpts.Root = args[0]
 		}
-		if dumpOpts.Root == "" {
-			dumpOpts.Root = "."
+		if cleanOpts.Root == "" {
+			cleanOpts.Root = "."
 		}
-		f, err := render.Parse(dumpFormat)
+		f, err := render.Parse(cleanFormat)
 		if err != nil {
 			return err
 		}
-		dumpOpts.Format = f
-		dumpOpts.Clipboard = dumpClipboard
-		dumpOpts.Mode = pipeline.ModeDump
-		dumpOpts.UseGitignore = !dumpNoGitignore
-		return pipeline.Run(dumpOpts)
+		cleanOpts.Format = f
+		cleanOpts.Clipboard = cleanClipboard
+		cleanOpts.Mode = pipeline.ModeClean
+		cleanOpts.KeepDoc = cleanKeepDoc
+		cleanOpts.UseGitignore = !cleanNoGitignore
+		if err := applyLimitFlags(cmd, &cleanOpts); err != nil {
+			return err
+		}
+		return pipeline.Run(cleanOpts)
 	},
 }
 

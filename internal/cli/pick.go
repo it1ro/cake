@@ -22,52 +22,21 @@ var pickCmd = &cobra.Command{
 	Use:   "pick [path]",
 	Short: "Интерактивный выбор файлов",
 	Long: `Открывает TUI со списком файлов проекта.
-
-Стартует в древовидном режиме (t — переключить на плоский список).
-
-Навигация (tree):
-  ↑/↓ или j/k      перемещение
-  ←/→ или h/l      свернуть / развернуть директорию
-  space            выбрать/снять (на директории — всё поддерево)
-  a / A            выбрать / снять всё
-  d                toggle директории под курсором
-  /                фильтр по пути (esc — сбросить)
-
-Навигация (flat):
-  те же клавиши; ←/→ не действуют.
-
-Общее:
-  tab              переключить режим dump ↔ clean
-  f                переключить формат xml → markdown → plain
-  t                переключить tree ↔ flat
-  ⏎                экспорт (pipeline.RunWith)
-  q / ctrl+c       выход без вывода
-
+... (без изменений в тексте Long)
 Учитывает .gitignore (корневой и вложенные) по умолчанию.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) > 0 {
-			cleanOpts.Root = args[0]
-		}
-		if cleanOpts.Root == "" {
-			cleanOpts.Root = "."
-		}
-		f, err := render.Parse(cleanFormat)
-		if err != nil {
-			return err
-		}
-		cleanOpts.Format = f
-		cleanOpts.Clipboard = cleanClipboard
-		cleanOpts.Mode = pipeline.ModeClean
-		cleanOpts.KeepDoc = cleanKeepDoc
-		cleanOpts.UseGitignore = !cleanNoGitignore
-		return pipeline.Run(cleanOpts)
+		return runPick(cmd, args)
 	},
 }
 
-// runPick — общая точка входа для `cake` (без аргументов)
-// и `cake pick [path]`. Стартует TUI в tree-режиме.
-func runPick(args []string) error {
+// runPick — общая точка входа для `cake` (без аргументов) и
+// `cake pick [path]`. Стартует TUI в tree-режиме.
+//
+// cmd нужен, чтобы прочитать persistent-флаги лимита (--profile,
+// --context-limit, …). При вызове из `cake` без аргументов
+// cobra передаёт rootCmd.
+func runPick(cmd *cobra.Command, args []string) error {
 	if len(args) > 0 {
 		pickOpts.Root = args[0]
 	}
@@ -82,6 +51,9 @@ func runPick(args []string) error {
 	pickOpts.Clipboard = pickClipboard
 	pickOpts.Mode = pipeline.ModeDump
 	pickOpts.UseGitignore = !pickNoGitignore
+	if err := applyLimitFlags(cmd, &pickOpts); err != nil {
+		return err
+	}
 
 	files, err := pipeline.Plan(pickOpts)
 	if err != nil {

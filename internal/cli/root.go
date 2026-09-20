@@ -36,7 +36,7 @@ var rootCmd = &cobra.Command{
 	Args:          cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
-			return runPick(nil)
+			return runPick(cmd, nil)
 		}
 		return runQuickDump(cmd, args[0])
 	},
