@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -16,6 +17,7 @@ var (
 	flagOnOverflow   string
 	flagReportFile   string
 	flagProfile      string
+	flagVerbose      bool
 )
 
 func registerLimitFlags() {
@@ -30,6 +32,8 @@ func registerLimitFlags() {
 		"путь к JSON-отчёту о переполнении")
 	pf.StringVar(&flagProfile, "profile", "",
 		"профиль из cake.toml (по умолчанию [default])")
+	pf.BoolVarP(&flagVerbose, "verbose", "v", false,
+		"печатать путь применённого cake.toml и профиль")
 }
 
 // applyFlags накатывает cake.toml (если есть), затем переопределяет
@@ -74,6 +78,10 @@ func applyFlags(cmd *cobra.Command, opts *pipeline.Options, format *string) erro
 
 	var cfgReserve string
 	if loaded != nil {
+		if flagVerbose {
+			fmt.Fprintf(os.Stderr, "config: %s (profile %s)\n",
+				loaded.Path, loaded.Profile)
+		}
 		p := loaded.Resolved
 
 		if p.ContextLimit != "" {

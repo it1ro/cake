@@ -25,14 +25,24 @@ const (
 
 // OverflowError — типизированная ошибка «не влезли».
 // main.go различает её через errors.As и выходит с кодом 3.
+//
+// ReportErr — сопутствующая ошибка записи --report-file.
+// Она не заменяет основную семантику: «не влезли» важнее,
+// чем «файл не записался». main.go печатает оба сообщения
+// и всё равно возвращает 3.
 type OverflowError struct {
-	Report *report.Report
+	Report    *report.Report
+	ReportErr error
 }
 
 func (e *OverflowError) Error() string {
-	return fmt.Sprintf("context overflow: ~%d > %d (limit %d, reserve %d)",
+	base := fmt.Sprintf("context overflow: ~%d > %d (limit %d, reserve %d)",
 		e.Report.Estimate, e.Report.Ceiling,
 		e.Report.Limit, e.Report.Reserve)
+	if e.ReportErr != nil {
+		return base + "; " + e.ReportErr.Error()
+	}
+	return base
 }
 
 // CheckInput — что известно о наборе.
@@ -120,7 +130,9 @@ func (o Options) reportWriter() io.Writer {
 //
 // Ошибка записи --report-file не глотается: если путь указывает
 // в несуществующую директорию, пользователь узнает об этом
-// сразу, а не по отсутствию файла в CI.
+// сразу. При OverflowFail она кладётся в ReportErr, чтобы main
+// не потерял exit-код 3 — «не влезли» остаётся главным фактом,
+// «файл не записался» — сопутствующим.
 func handleOverflow(opts *Options, r *report.Report) error {
 	if opts.OnOverflow == OverflowDrop {
 		fmt.Fprintf(opts.reportWriter(),
@@ -138,7 +150,10 @@ func handleOverflow(opts *Options, r *report.Report) error {
 	r.Write(opts.reportWriter())
 	if opts.ReportFile != "" {
 		if err := r.WriteJSON(opts.ReportFile); err != nil {
-			return fmt.Errorf("report-file %s: %w", opts.ReportFile, err)
+			return &OverflowError{
+				Report:    r,
+				ReportErr: fmt.Errorf("report-file %s: %w", opts.ReportFile, err),
+			}
 		}
 	}
 	return &OverflowError{Report: r}

@@ -505,3 +505,20 @@ func filterEntries(all []types.FileEntry, pattern string) []types.FileEntry {
 	}
 	return out
 }
+
+// LimitCeiling возвращает эффективный потолок для индикатора лимита.
+// 0 — лимит не задан, индикатор не показывается.
+func (m Model) LimitCeiling() int {
+	if m.opts.ContextLimit <= 0 {
+		return 0
+	}
+	reserve := m.opts.Reserve
+	if reserve <= 0 {
+		reserve = tokens.DefaultReserve(m.opts.ContextLimit)
+	}
+	ceiling := m.opts.ContextLimit - reserve
+	if m.opts.Budget > 0 && m.opts.Budget < ceiling {
+		ceiling = m.opts.Budget
+	}
+	return ceiling
+}

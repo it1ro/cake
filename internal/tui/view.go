@@ -28,6 +28,7 @@ var (
 	cGreen   = lipgloss.AdaptiveColor{Light: "#40a02b", Dark: "#a6e3a1"}
 	cYellow  = lipgloss.AdaptiveColor{Light: "#df8e1d", Dark: "#f9e2af"}
 	cMauve   = lipgloss.AdaptiveColor{Light: "#8839ef", Dark: "#cba6f7"}
+	cRed     = lipgloss.AdaptiveColor{Light: "#d20f39", Dark: "#f38ba8"}
 )
 
 // ─── Стили ───────────────────────────────────────────────────────────
@@ -349,9 +350,50 @@ func (m Model) renderStatus() string {
 		format,
 		dimStyle.Render(pos),
 		selectedStyle.Render(fmt.Sprintf("%d/%d sel", m.SelectedCount(), len(m.all))),
-		selectedStyle.Render("~" + humanTokens(m.SelectedTokens())),
 	}
+
+	// Индикатор лимита заменяет обычную оценку токенов, если лимит
+	// задан. Высота строки не меняется — новые элементы просто
+	// дописываются в тот же join.
+	if ind := m.limitIndicator(); ind != "" {
+		parts = append(parts, ind)
+	} else {
+		parts = append(parts, selectedStyle.Render("~"+humanTokens(m.SelectedTokens())))
+	}
+
 	return badge + " " + strings.Join(parts, sep)
+}
+
+// limitIndicator возвращает строку вида "≈180k / 180k" с цветом по
+// порогам 90% и 100%. Пустая строка, если лимит не задан.
+//
+// В clean-режиме оценка SelectedTokens идёт по Size (до
+// процессоров), то есть завышена — рядом с числом ставится "≤".
+// Пометка говорит: «не больше, точное значение после обработки».
+func (m Model) limitIndicator() string {
+	ceiling := m.LimitCeiling()
+	if ceiling <= 0 {
+		return ""
+	}
+	tok := m.SelectedTokens()
+	pct := tok * 100 / ceiling
+
+	label := fmt.Sprintf("≈%s / %s",
+		humanTokensCompact(tok),
+		humanTokensCompact(ceiling),
+	)
+	if m.opts.Mode == pipeline.ModeClean {
+		label = "≤" + label
+	}
+
+	style := lipgloss.NewStyle().Foreground(cText)
+	switch {
+	case pct > 100:
+		style = lipgloss.NewStyle().Foreground(cRed)
+	case pct >= 90:
+		style = lipgloss.NewStyle().Foreground(cYellow)
+	}
+	return style.Render(label)
 }
 
 // ─── Подсказка ───────────────────────────────────────────────────────
@@ -383,6 +425,21 @@ func humanTokens(n int) string {
 		return fmt.Sprintf("%dk", n/1000)
 	}
 	return fmt.Sprintf("%d tok", n)
+}
+
+// humanTokensCompact — для индикатора лимита: без «tok» и «~»,
+// чтобы строка не распухала. 171000 → 171k, 3200 → 3.2k, 999 → 999.
+func humanTokensCompact(n int) string {
+	if n >= 10000 {
+		return fmt.Sprintf("%dk", n/1000)
+	}
+	if n >= 1000 {
+		if n%1000 == 0 {
+			return fmt.Sprintf("%dk", n/1000)
+		}
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 // ─── Иконки (Nerd Font, опционально) ─────────────────────────────────

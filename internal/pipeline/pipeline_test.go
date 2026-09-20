@@ -383,3 +383,36 @@ func TestRunWith_OmittedRootAndSub(t *testing.T) {
 		t.Errorf("sub bucket missing:\n%s", got)
 	}
 }
+
+func TestOverflow_ReportFileErrorStillExit3(t *testing.T) {
+	root := t.TempDir()
+	body := strings.Repeat("x", 4000)
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files, err := Plan(Options{Root: root, UseGitignore: false, MaxSize: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	badReport := filepath.Join(root, "nonexistent", "report.json")
+	err = RunWith(Options{
+		Root:         root,
+		Mode:         ModeDump,
+		Format:       render.FormatXML,
+		UseGitignore: false,
+		MaxSize:      1 << 20,
+		ContextLimit: 100,
+		Reserve:      10,
+		OnOverflow:   OverflowFail,
+		ReportFile:   badReport,
+		Report:       io.Discard,
+	}, files)
+
+	var oe *OverflowError
+	if !errors.As(err, &oe) {
+		t.Fatalf("want OverflowError, got %v", err)
+	}
+	if oe.ReportErr == nil {
+		t.Error("want ReportErr set")
+	}
+}
