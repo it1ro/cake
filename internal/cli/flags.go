@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -18,6 +19,7 @@ var (
 	flagReportFile   string
 	flagProfile      string
 	flagVerbose      bool
+	flagNoProgress   bool
 )
 
 func registerLimitFlags() {
@@ -34,6 +36,8 @@ func registerLimitFlags() {
 		"профиль из cake.toml (по умолчанию [default])")
 	pf.BoolVarP(&flagVerbose, "verbose", "v", false,
 		"печатать путь применённого cake.toml и профиль")
+	pf.BoolVar(&flagNoProgress, "no-progress", false,
+		"не показывать прогресс-бар при чтении файлов")
 }
 
 // applyFlags накатывает cake.toml (если есть), затем переопределяет
@@ -165,6 +169,13 @@ func applyFlags(cmd *cobra.Command, opts *pipeline.Options, format *string) erro
 	}
 	if f.Changed("report-file") {
 		opts.ReportFile = flagReportFile
+	}
+
+	// Прогресс-бар: --no-progress заменяет автоопределение
+	// (stderr-TTY) на безусловный io.Discard. Отдельного
+	// --progress нет: в TTY бар включён и без флага.
+	if flagNoProgress {
+		opts.Progress = io.Discard
 	}
 	return nil
 }

@@ -31,7 +31,7 @@ GOFMT       ?= gofmt
 .PHONY: help
 help: ## Показать список целей
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} \
-	     /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	     /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
 # ─── Разработка ───────────────────────────────────────────────────────
 
@@ -87,6 +87,18 @@ test-race: ## Тесты с race-детектором
 test-v: ## Тесты в verbose-режиме
 	$(GO) test -v ./...
 
+.PHONY: smoke
+smoke: build ## Smoke-тест: exit-коды, fail/drop, cake.toml, отчёт
+	@./scripts/smoke.sh
+
+.PHONY: bench-k8s
+bench-k8s: build ## Бенчмарк на kubernetes/kubernetes (opt-in: сеть + минуты)
+	@CAKE_SMOKE_BENCH=1 ./scripts/smoke.sh
+
+.PHONY: bench-k8s-refresh
+bench-k8s-refresh: build ## То же, но с переклонированием k8s
+	@CAKE_SMOKE_BENCH=1 CAKE_SMOKE_BENCH_REFRESH=1 ./scripts/smoke.sh
+
 .PHONY: cover
 cover: ## Покрытие с HTML-отчётом (./coverage.html)
 	$(GO) test -coverprofile=coverage.out ./...
@@ -97,6 +109,9 @@ cover: ## Покрытие с HTML-отчётом (./coverage.html)
 .PHONY: bench
 bench: ## Бенчмарки
 	$(GO) test -bench=. -benchmem ./...
+
+.PHONY: ci
+ci: check test-race build-matrix smoke ## Полный прогон перед тегом: check + test-race + build-matrix + smoke
 
 # ─── Зависимости ──────────────────────────────────────────────────────
 

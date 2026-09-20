@@ -14,21 +14,30 @@ import (
 
 // CDATA-маркеры.
 //
-// Close:  ]]]]><![CDATA[>  — 4 ']' + '>' + <![CDATA[ + '>'
+// cdataCloseMarker — стандартный закрывающий маркер секции CDATA.
+// Парсер ищет ровно эту тройку символов, чтобы закончить блок.
 //
-//	Парсер видит: ]] (текст в текущем CDATA) + ]]> (закрытие)
-//	+ <![CDATA[ (открытие нового) + > (текст в новом).
-//	Поэтому содержимое между <![CDATA[ и этим маркером может
-//	безопасно содержать ]]>.
+// cdataEscape — безопасная замена `]]>` внутри содержимого.
+// Парсер читает её так:
 //
-// Escape: ]]]]]]><![CDATA[><![CDATA[>  — 6 ']' + два <![CDATA[
+//	]]         — текст в текущей CDATA
+//	]]>        — её закрытие
+//	<![CDATA[  — открытие новой
+//	>          — текст в новой CDATA
 //
-//	На это заменяется close-маркер, если он встретился в самом
-//	содержимом. Замена добавляет два ']' и ещё один <![CDATA[,
-//	чтобы наивный close-маркер внутри текста не закрыл блок.
+// Склейка содержимого двух секций даёт исходное `]]>`. Так
+// последовательность внутри файла не может преждевременно закрыть
+// блок. Проверено разбором `<![CDATA[a]]]]><![CDATA[>b]]>`:
+// парсер выдаёт `a]]>b`.
+//
+// Раньше `cdataCloseMarker` был длиннее (`]]]]><![CDATA[>`), а
+// `ReplaceAll` искал его же в содержимом — то есть `]]>` в
+// исходнике вообще не экранировался, и первый же такой фрагмент
+// закрывал CDATA. `TestXML_EscapesCDATA` и `TestCDATAMarkerShape`
+// фиксируют контракт.
 const (
-	cdataCloseMarker = "]]]]><![CDATA[>"
-	cdataEscape      = "]]]]]]><![CDATA[><![CDATA[>"
+	cdataCloseMarker = "]]>"
+	cdataEscape      = "]]]]><![CDATA[>"
 )
 
 func XML(ctx types.Context, w io.Writer) error {
@@ -65,7 +74,8 @@ func XML(ctx types.Context, w io.Writer) error {
 			f.Entry.Path, f.Entry.Language, f.Lines, len(f.Content))
 		bw.WriteString("  <![CDATA[\n")
 
-		content := strings.ReplaceAll(string(f.Content), cdataCloseMarker, cdataEscape)
+		content := strings.ReplaceAll(string(f.Content),
+			cdataCloseMarker, cdataEscape)
 		bw.WriteString(content)
 		if len(content) > 0 && content[len(content)-1] != '\n' {
 			bw.WriteByte('\n')

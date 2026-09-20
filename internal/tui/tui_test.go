@@ -424,3 +424,87 @@ func TestScrollUpKeepsOffset(t *testing.T) {
 		t.Errorf("offset должен уменьшиться ровно на 1: %d → %d", off, m.offset)
 	}
 }
+
+// ─── PR 6.4: индикатор лимита ────────────────────────────────────────
+//
+// Цвет в тестах не проверяется: lipgloss.Style.Render даёт
+// escape-последовательности, которые в bytes.Buffer (не TTY)
+// не раскрываются до ANSI. Проверять `\x1b[33m` — фиксировать
+// внутренний формат lipgloss. Смотрим только на текст и префикс.
+
+// Без ContextLimit индикатор не показывается: поведение прежнее,
+// в статусе — «~N tok». Ключевой инвариант обратной совместимости.
+func TestLimitIndicator_NoLimit(t *testing.T) {
+	m := newModel("a.go")
+	m.selected["a.go"] = true
+
+	if got := m.limitIndicator(); got != "" {
+		t.Errorf("без ContextLimit индикатор должен быть пуст, got %q", got)
+	}
+	if m.LimitCeiling() != 0 {
+		t.Errorf("LimitCeiling = %d, want 0", m.LimitCeiling())
+	}
+
+	// В renderStatus это значит: в строке не должно быть «≈».
+	m.width, m.height = 80, 24
+	if strings.Contains(m.renderStatus(), "≈") {
+		t.Errorf("без лимита renderStatus не должен содержать ≈: %q",
+			m.renderStatus())
+	}
+}
+
+// При заданном лимите индикатор непуст и содержит «≈» и оба числа.
+// Пороги 90% и 100% проверяются на уровне pct — их цвет
+// не проверяем, см. комментарий выше.
+func TestLimitIndicator_Thresholds(t *testing.T) {
+	m := newModel("a.go", "b.go", "c.go")
+	for _, p := range []string{"a.go", "b.go", "c.go"} {
+		m.selected[p] = true
+	}
+	// Size=100 → EstimateSize=25, три файла → 75 токенов.
+	m.opts.ContextLimit = 200
+	m.opts.Reserve = 100 // ceiling = 100; 75/100 = 75% — «норма»
+
+	got := m.limitIndicator()
+	if got == "" {
+		t.Fatal("с лимитом индикатор должен быть непуст")
+	}
+	for _, want := range []string{"≈", "75", "/", "100"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("индикатор %q должен содержать %q", got, want)
+		}
+	}
+
+	// Ужесточаем: потолок 30, выбрано 75 — переполнение.
+	// Строка та же (числа + «/»), но pct > 100 — цвет красный,
+	// его не проверяем. Убеждаемся, что индикатор не паникует
+	// и остаётся непустым.
+	m.opts.Reserve = 170 // ceiling = 30
+	if got := m.limitIndicator(); !strings.Contains(got, "/") {
+		t.Errorf("при переполнении индикатор тоже должен содержать /, got %q", got)
+	}
+}
+
+// В clean-режиме оценка SelectedTokens идёт по Size (до процессоров)
+// и завышена. Индикатор обязан намекнуть на это символом «≤».
+func TestLimitIndicator_CleanMark(t *testing.T) {
+	m := newModel("a.go")
+	m.selected["a.go"] = true
+	m.opts.ContextLimit = 200
+	m.opts.Reserve = 100
+	m.opts.Mode = pipeline.ModeClean
+
+	got := m.limitIndicator()
+	if got == "" {
+		t.Fatal("индикатор должен быть непуст при заданном лимите")
+	}
+	if !strings.HasPrefix(got, "≤") {
+		t.Errorf("в clean ожидается префикс ≤, got %q", got)
+	}
+
+	// В dump-режиме префикса ≤ быть не должно.
+	m.opts.Mode = pipeline.ModeDump
+	if got := m.limitIndicator(); strings.HasPrefix(got, "≤") {
+		t.Errorf("в dump префикса ≤ быть не должно, got %q", got)
+	}
+}

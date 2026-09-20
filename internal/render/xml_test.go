@@ -60,8 +60,14 @@ func TestXML_EscapesCDATA(t *testing.T) {
 	out := buf.String()
 
 	// Наш эскейп: ]]> → ]]]]><![CDATA[>
-	if !strings.Contains(out, "]]]]><![CDATA[>") {
+	if !strings.Contains(out, cdataEscape) {
 		t.Errorf("CDATA sequence not escaped\n--- got ---\n%s", out)
+	}
+	// Сырое `"]]>"` (с кавычками из исходника) в выводе остаться
+	// не должно — оно должно было превратиться в
+	// `"]]]]><![CDATA[>"`.
+	if strings.Contains(out, `"]]>"`) {
+		t.Errorf("сырое ]]> осталось в содержимом:\n%s", out)
 	}
 }
 
@@ -96,9 +102,9 @@ func TestXML_AllAttributesQuoted(t *testing.T) {
 	}
 }
 
-// Без cdataCloseMarker в содержимом рендер не должен добавлять
-// экранирующий двойной CDATA. Считаем закрывающие маркеры: для
-// одного <tree> и одного <file> их ровно 2.
+// Без `]]>` в содержимом рендер не должен добавлять экранирующий
+// двойной CDATA. Считаем закрывающие маркеры: для одного <tree>
+// и одного <file> их ровно 2.
 func TestXML_NoEscapingWhenNotNeeded(t *testing.T) {
 	ctx := types.Context{
 		Project: "test",
@@ -119,32 +125,34 @@ func TestXML_NoEscapingWhenNotNeeded(t *testing.T) {
 	if got := strings.Count(out, cdataCloseMarker); got != 2 {
 		t.Errorf("want 2 CDATA close markers, got %d:\n%s", got, out)
 	}
-	// Экранированного варианта быть не должно. cdataEscape длиннее
-	// cdataCloseMarker, поэтому его наличие — точный признак, что
-	// применили escape к содержимому.
+	// Экранированного варианта быть не должно: содержимое не
+	// содержит `]]>`, поэтому замен не было.
 	if strings.Contains(out, cdataEscape) {
 		t.Errorf("unexpected CDATA escape:\n%s", out)
 	}
 }
 
-// Константы — не магические строки: close должен начинаться
-// ровно с четырёх ']', escape — ровно с шести. Ошибка в один ']'
-// ломает XML-парсер у LLM, поэтому фиксируем форму отдельно.
+// Константы — не магические строки. cdataCloseMarker — это
+// стандартный `]]>`; cdataEscape — безопасная замена, которая
+// при парсинге даёт обратно `]]>`. Ошибка в один `]` ломает
+// XML-парсер у LLM, поэтому фиксируем форму отдельно.
 func TestCDATAMarkerShape(t *testing.T) {
-	if !strings.HasPrefix(cdataCloseMarker, "]]]]>") {
-		t.Errorf("cdataCloseMarker должен начинаться с ']]]]>', got %q",
-			cdataCloseMarker)
+	if cdataCloseMarker != "]]>" {
+		t.Errorf("cdataCloseMarker = %q, want %q",
+			cdataCloseMarker, "]]>")
 	}
-	if strings.HasPrefix(cdataCloseMarker, "]]]]]>") {
-		t.Errorf("cdataCloseMarker: лишний ']' в начале: %q", cdataCloseMarker)
+	if cdataEscape != "]]]]><![CDATA[>" {
+		t.Errorf("cdataEscape = %q, want %q",
+			cdataEscape, "]]]]><![CDATA[>")
 	}
-	if !strings.HasPrefix(cdataEscape, "]]]]]]>") {
-		t.Errorf("cdataEscape должен начинаться с ']]]]]]>', got %q", cdataEscape)
-	}
-	// Escape содержит close-маркер начиная с позиции 2 — это и есть
-	// механизм: «сдвинули на два ']', чтобы наивный close не сработал».
-	if !strings.Contains(cdataEscape, cdataCloseMarker) {
-		t.Errorf("cdataEscape должен содержать cdataCloseMarker:\n  escape=%q\n  marker=%q",
-			cdataEscape, cdataCloseMarker)
+	// Отдельно фиксируем число ведущих `]` в escape: ровно 4.
+	// Ровно 4 — потому что парсер должен увидеть `]]` + `]]>`,
+	// то есть 2 `]` в первой CDATA и `]]>` как закрытие. Если
+	// поставить 6, парсер срежет лишние как часть закрытия, и
+	// round-trip сломается.
+	beforeGT := cdataEscape[:strings.Index(cdataEscape, ">")]
+	if n := strings.Count(beforeGT, "]"); n != 4 {
+		t.Errorf("cdataEscape: want 4 ведущих ']', got %d (%q)",
+			n, cdataEscape)
 	}
 }

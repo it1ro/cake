@@ -124,6 +124,24 @@ func (o Options) reportWriter() io.Writer {
 	return os.Stderr
 }
 
+// progressWriter выбирает, куда рисовать прогресс-бар.
+//
+// nil → no-op: либо Progress не задан и stderr не TTY, либо
+// пользователь явно отключил через io.Discard (флаг --no-progress).
+// Явное значение (включая io.Discard) — приоритетно.
+//
+// isTTY определена в summary.go того же пакета; переиспользуем,
+// чтобы предикат «это терминал» был один на весь pipeline.
+func (o Options) progressWriter() io.Writer {
+	if o.Progress != nil {
+		return o.Progress
+	}
+	if !isTTY(os.Stderr) {
+		return nil
+	}
+	return os.Stderr
+}
+
 // handleOverflow обрабатывает переполнение. Возвращает nil при
 // OverflowDrop (модифицирует opts.Budget, чтобы бюджетный фильтр
 // обрезал набор) и *OverflowError при OverflowFail.

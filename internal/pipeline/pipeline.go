@@ -8,6 +8,7 @@ import (
 
 	"github.com/it1ro/cake/internal/clipboard"
 	"github.com/it1ro/cake/internal/processor"
+	"github.com/it1ro/cake/internal/progress"
 	"github.com/it1ro/cake/internal/render"
 	"github.com/it1ro/cake/internal/report"
 	"github.com/it1ro/cake/internal/tokens"
@@ -49,6 +50,14 @@ type Options struct {
 
 	// Summary — куда писать краткий отчёт после clipboard.
 	Summary io.Writer
+
+	// Progress — куда рисовать индикатор прогресса при чтении
+	// файлов. nil → автоопределение: stderr, если это TTY,
+	// иначе молча. io.Discard → отключить явно (из --no-progress).
+	//
+	// Прогресс показывается только при total ≥ progress.MinTotal
+	// (200): на маленьких проектах бар мигает и мешает.
+	Progress io.Writer
 }
 
 // Plan — обход ФС и применение фильтров. См. комментарий в
@@ -79,6 +88,7 @@ func Run(opts Options) error {
 //  2. Dump pre-flight: оценка по Size, без чтения содержимого.
 //     Если переполнение — handleOverflow (fail/drop).
 //  3. Чтение и (в clean) прогон через процессор.
+//     Прогресс — в stderr, только при TTY и total ≥ 200.
 //  4. Clean post-flight: точная оценка по Content.
 //  5. Бюджетный фильтр (жадный, по Content).
 //  6. Рендер в target.
@@ -109,9 +119,23 @@ func RunWith(opts Options, files []types.FileEntry) error {
 	}
 
 	// Process.
+	//
+	// Прогресс рисуется здесь — самая длительная фаза на больших
+	// проектах (чтение + парсинг в clean). Pre-flight выше уже
+	// проверил лимит; если переполнение — до цикла не дошли.
+	//
+	// prog.Finish() вызывается дважды: defer'ом как страховка на
+	// ранний return (в т.ч. OverflowError из clean post-flight),
+	// и явно перед clipboard/summary — чтобы стереть строку
+	// прогресса до того, как writeSummary напечатает отчёт.
+	// Повторный вызов — no-op.
+	prog := progress.New(len(files), opts.progressWriter())
+	defer prog.Finish()
+
 	procOpts := processor.Options{KeepDoc: opts.KeepDoc}
 	processed := make([]types.ProcessedFile, 0, len(files))
 	for _, e := range files {
+		prog.Inc()
 		content, err := os.ReadFile(e.AbsPath)
 		if err != nil {
 			continue
@@ -129,6 +153,7 @@ func RunWith(opts Options, files []types.FileEntry) error {
 			Lines:   countLines(content),
 		})
 	}
+	prog.Finish()
 
 	// Clean post-flight.
 	if opts.Mode == ModeClean {
