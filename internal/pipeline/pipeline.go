@@ -187,7 +187,7 @@ func RunWith(opts Options, files []types.FileEntry) error {
 		if err := clipboard.CopyToTTY(buf.Bytes()); err != nil {
 			return fmt.Errorf("clipboard: %w", err)
 		}
-		writeSummary(opts.Summary, ctx, buf.Len())
+		writeSummary(opts.Summary, opts, ctx, buf.Len())
 	}
 	return nil
 }
